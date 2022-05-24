@@ -798,9 +798,10 @@ func (p *Profiler) writeProfile(ctx context.Context, prof *profile.Profile) erro
 		i++
 	}
 
-	labelOldFormat = append(labelOldFormat, &profilestorepb.Label{
-		Name:  string("LOL"),
-		Value: string("HAHAHHAHA VALUE"),
+	otherlabels := labelOldFormat
+	otherlabels = append(otherlabels, &profilestorepb.Label{
+		Name:  string("OMG"),
+		Value: string("this is a test"),
 	})
 
 	// NOTICE: This is a batch client, so nothing will be sent immediately.
@@ -814,11 +815,16 @@ func (p *Profiler) writeProfile(ctx context.Context, prof *profile.Profile) erro
 				Samples: []*profilestorepb.RawSample{{
 					RawProfile: buf.Bytes(),
 				}},
-
-				// for unit y
-
-				// k8s lol
-			}},
+			},
+			// for unit y
+			{
+				Labels: &profilestorepb.LabelSet{Labels: otherlabels},
+				Samples: []*profilestorepb.RawSample{{
+					RawProfile: buf.Bytes(),
+				}},
+			},
+			// k8s lol
+		},
 	})
 
 	return err
