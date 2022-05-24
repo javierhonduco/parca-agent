@@ -62,6 +62,7 @@ typedef struct stack_count_key {
   u32 pid;
   int user_stack_id;
   int kernel_stack_id;
+  u64 cgroup_id;
 } stack_count_key_t;
 
 /*================================ MAPS =====================================*/
@@ -105,7 +106,10 @@ int do_sample(struct bpf_perf_event_data *ctx) {
       .pid = tgid,
       .user_stack_id = 0,
       .kernel_stack_id = 0,
+      .cgroup_id = 0,
   };
+
+  key.cgroup_id = bpf_get_current_cgroup_id();
 
   // get user stack id
   int stack_id = bpf_get_stackid(ctx, &stack_traces, BPF_F_USER_STACK);

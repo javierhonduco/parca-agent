@@ -62,7 +62,7 @@ const (
 	defaultRLimit = 1024 << 20 // ~1GB
 )
 
-type stack [doubleStackDepth]uint64
+type stackType [doubleStackDepth]uint64
 
 type bpfMaps struct {
 	counts      *bpf.BPFMap
@@ -79,6 +79,7 @@ type stackCountKey struct {
 	PID           uint32
 	UserStackID   int32
 	KernelStackID int32
+	CgroupID      uint64
 }
 
 func (m bpfMaps) clean() error {
@@ -393,7 +394,9 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 			File: "[kernel.kallsyms]",
 		}
 
-		samples         = map[stack]*profile.Sample{}
+		//samples         = map[uint64]map[stackType]*profile.Sample{}
+		samples = map[stackType]*profile.Sample{}
+
 		locations       = []*profile.Location{}
 		kernelLocations = []*profile.Location{}
 		userLocations   = map[uint32][]*profile.Location{} // PID -> []*profile.Location
@@ -414,9 +417,12 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 			return fmt.Errorf("read stack count key: %w", err)
 		}
 
+		cgroupID := key.CgroupID
+		level.Debug(p.logger).Log("msg", "cgroupID", "cgroupID", cgroupID)
+
 		// Twice the stack depth because we have a user and a potential Kernel stack.
 		// Read order matters, since we read from the key buffer.
-		stack := stack{}
+		stack := stackType{}
 		userErr := p.readUserStack(key.UserStackID, &stack)
 		if userErr != nil {
 			if errors.Is(userErr, errUnrecoverable) {
@@ -446,6 +452,8 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 			continue
 		}
 
+		//samples[cgroupID] = map[stackType]*profile.Sample{}
+		//sample, ok := samples[cgroupID][stack]
 		sample, ok := samples[stack]
 		if ok {
 			// We already have a sample with this stack trace, so just add
@@ -510,7 +518,9 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 			Value:    []int64{int64(value)},
 			Location: sampleLocations,
 		}
+		//samples[cgroupID][stack] = sample
 		samples[stack] = sample
+
 	}
 	if it.Err() != nil {
 		return fmt.Errorf("failed iterator: %w", it.Err())
@@ -548,7 +558,8 @@ func (p *Profiler) loopReport(lastProfileTakenAt time.Time, lastError error) {
 func (p *Profiler) buildProfile(
 	ctx context.Context,
 	captureTime time.Time,
-	samples map[stack]*profile.Sample,
+	//samples map[uint64]map[stackType]*profile.Sample,
+	samples map[stackType]*profile.Sample,
 	locations []*profile.Location,
 	kernelLocations []*profile.Location,
 	userLocations map[uint32][]*profile.Location,
@@ -572,9 +583,12 @@ func (p *Profiler) buildProfile(
 	}
 
 	// Build Profile from samples, locations and mappings.
+	// cgroups first, ignore them
+	//for _, sample := range samples {
 	for _, s := range samples {
 		prof.Sample = append(prof.Sample, s)
 	}
+	//}
 
 	// Locations.
 	prof.Location = locations
@@ -684,7 +698,7 @@ func (p *Profiler) resolveKernelFunctions(kernelLocations []*profile.Location) (
 }
 
 // readUserStack reads the user stack trace from the stacktraces ebpf map into the given buffer.
-func (p *Profiler) readUserStack(userStackID int32, stack *stack) error {
+func (p *Profiler) readUserStack(userStackID int32, stack *stackType) error {
 	if userStackID == 0 {
 		p.metrics.failedStackUnwindingAttempts.WithLabelValues("user").Inc()
 		return errors.New("user stack ID is 0, probably stack unwinding failed")
@@ -704,7 +718,7 @@ func (p *Profiler) readUserStack(userStackID int32, stack *stack) error {
 }
 
 // readKernelStack reads the kernel stack trace from the stacktraces ebpf map into the given buffer.
-func (p *Profiler) readKernelStack(kernelStackID int32, stack *stack) error {
+func (p *Profiler) readKernelStack(kernelStackID int32, stack *stackType) error {
 	if kernelStackID == 0 {
 		p.metrics.failedStackUnwindingAttempts.WithLabelValues("kernel").Inc()
 		return errors.New("kernel stack ID is 0, probably stack unwinding failed")
@@ -784,16 +798,27 @@ func (p *Profiler) writeProfile(ctx context.Context, prof *profile.Profile) erro
 		i++
 	}
 
+	labelOldFormat = append(labelOldFormat, &profilestorepb.Label{
+		Name:  string("LOL"),
+		Value: string("HAHAHHAHA VALUE"),
+	})
+
 	// NOTICE: This is a batch client, so nothing will be sent immediately.
 	// Make sure that the batch write client has the correct behaviour if you change any parameters.
 	_, err := p.writeClient.WriteRaw(ctx, &profilestorepb.WriteRawRequest{
 		Normalized: true,
-		Series: []*profilestorepb.RawProfileSeries{{
-			Labels: &profilestorepb.LabelSet{Labels: labelOldFormat},
-			Samples: []*profilestorepb.RawSample{{
-				RawProfile: buf.Bytes(),
+		Series: []*profilestorepb.RawProfileSeries{
+			// for unit x
+			{
+				Labels: &profilestorepb.LabelSet{Labels: labelOldFormat},
+				Samples: []*profilestorepb.RawSample{{
+					RawProfile: buf.Bytes(),
+				}},
+
+				// for unit y
+
+				// k8s lol
 			}},
-		}},
 	})
 
 	return err
