@@ -21,7 +21,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -43,7 +42,6 @@ import (
 	"github.com/prometheus/common/model"
 	"golang.org/x/sys/unix"
 
-	"github.com/parca-dev/parca-agent/pkg/agent"
 	"github.com/parca-dev/parca-agent/pkg/byteorder"
 	"github.com/parca-dev/parca-agent/pkg/debuginfo"
 	"github.com/parca-dev/parca-agent/pkg/ksym"
@@ -186,7 +184,7 @@ func newMetrics(reg prometheus.Registerer, target model.LabelSet) *metrics {
 	}
 }
 
-type CgroupProfiler struct {
+type Profiler struct {
 	logger log.Logger
 
 	mtx    *sync.RWMutex
@@ -214,7 +212,7 @@ type CgroupProfiler struct {
 	metrics *metrics
 }
 
-func NewCgroupProfiler(
+func NewProfiler(
 	logger log.Logger,
 	reg prometheus.Registerer,
 	ksymCache *ksym.Cache,
@@ -224,8 +222,8 @@ func NewCgroupProfiler(
 	target model.LabelSet,
 	profilingDuration time.Duration,
 	tmp string,
-) *CgroupProfiler {
-	return &CgroupProfiler{
+) *Profiler {
+	return &Profiler{
 		logger:              log.With(logger, "labels", target.String()),
 		mtx:                 &sync.RWMutex{},
 		target:              target,
@@ -250,22 +248,22 @@ func NewCgroupProfiler(
 	}
 }
 
-func (p *CgroupProfiler) LastProfileTakenAt() time.Time {
+func (p *Profiler) LastProfileTakenAt() time.Time {
 	p.mtx.RLock()
 	defer p.mtx.RUnlock()
 	return p.lastProfileTakenAt
 }
 
-func (p *CgroupProfiler) LastError() error {
+func (p *Profiler) LastError() error {
 	p.mtx.RLock()
 	defer p.mtx.RUnlock()
 	return p.lastError
 }
 
-func (p *CgroupProfiler) Stop() {
+func (p *Profiler) Stop() {
 	p.mtx.Lock()
 	defer p.mtx.Unlock()
-	level.Debug(p.logger).Log("msg", "stopping cgroup profiler")
+	level.Debug(p.logger).Log("msg", "stopping profiler")
 	if !p.metrics.unregister() {
 		level.Debug(p.logger).Log("msg", "cannot unregister metrics")
 	}
@@ -274,7 +272,7 @@ func (p *CgroupProfiler) Stop() {
 	}
 }
 
-func (p *CgroupProfiler) Labels() model.LabelSet {
+func (p *Profiler) Labels() model.LabelSet {
 	labels := model.LabelSet{
 		"__name__": "parca_agent_cpu",
 	}
@@ -288,8 +286,8 @@ func (p *CgroupProfiler) Labels() model.LabelSet {
 	return labels
 }
 
-func (p *CgroupProfiler) Run(ctx context.Context) error {
-	level.Debug(p.logger).Log("msg", "starting cgroup profiler")
+func (p *Profiler) Run(ctx context.Context) error {
+	level.Debug(p.logger).Log("msg", "starting profiler")
 
 	p.mtx.Lock()
 	ctx, p.cancel = context.WithCancel(ctx)
@@ -313,13 +311,8 @@ func (p *CgroupProfiler) Run(ctx context.Context) error {
 		return fmt.Errorf("load bpf object: %w", err)
 	}
 
-	cgroup, err := os.Open(string(p.target[agent.CgroupPathLabelName]))
-	if err != nil {
-		return fmt.Errorf("open cgroup: %w", err)
-	}
-	defer cgroup.Close()
-
 	cpus := runtime.NumCPU()
+
 	for i := 0; i < cpus; i++ {
 		fd, err := unix.PerfEventOpen(&unix.PerfEventAttr{
 			Type:   unix.PERF_TYPE_SOFTWARE,
@@ -327,7 +320,7 @@ func (p *CgroupProfiler) Run(ctx context.Context) error {
 			Size:   uint32(unsafe.Sizeof(unix.PerfEventAttr{})),
 			Sample: 100,
 			Bits:   unix.PerfBitDisabled | unix.PerfBitFreq,
-		}, int(cgroup.Fd()), i, -1, unix.PERF_FLAG_PID_CGROUP)
+		}, -1 /* pid */, i /* cpu id */, -1 /* group */, 0 /* flags */)
 		if err != nil {
 			return fmt.Errorf("open perf event: %w", err)
 		}
@@ -393,7 +386,7 @@ func (p *CgroupProfiler) Run(ctx context.Context) error {
 	}
 }
 
-func (p *CgroupProfiler) profileLoop(ctx context.Context, captureTime time.Time) (err error) {
+func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err error) {
 	var (
 		mappings      = maps.NewMapping(p.pidMappingFileCache)
 		kernelMapping = &profile.Mapping{
@@ -544,7 +537,7 @@ func (p *CgroupProfiler) profileLoop(ctx context.Context, captureTime time.Time)
 	return nil
 }
 
-func (p *CgroupProfiler) loopReport(lastProfileTakenAt time.Time, lastError error) {
+func (p *Profiler) loopReport(lastProfileTakenAt time.Time, lastError error) {
 	p.mtx.Lock()
 	defer p.mtx.Unlock()
 
@@ -552,7 +545,7 @@ func (p *CgroupProfiler) loopReport(lastProfileTakenAt time.Time, lastError erro
 	p.lastError = lastError
 }
 
-func (p *CgroupProfiler) buildProfile(
+func (p *Profiler) buildProfile(
 	ctx context.Context,
 	captureTime time.Time,
 	samples map[stack]*profile.Sample,
@@ -626,7 +619,7 @@ func (p *CgroupProfiler) buildProfile(
 }
 
 // resolveKernelFunctions resolves the just-in-time compiled functions using the perf map.
-func (p *CgroupProfiler) resolveJITedFunctions(locations map[uint32][]*profile.Location) map[uint64]*profile.Function {
+func (p *Profiler) resolveJITedFunctions(locations map[uint32][]*profile.Location) map[uint64]*profile.Function {
 	userFunctions := map[uint64]*profile.Function{}
 	for pid, locations := range locations {
 		perfMap, err := p.perfCache.CacheForPID(pid)
@@ -661,7 +654,7 @@ func (p *CgroupProfiler) resolveJITedFunctions(locations map[uint32][]*profile.L
 }
 
 // resolveKernelFunctions resolves kernel function names.
-func (p *CgroupProfiler) resolveKernelFunctions(kernelLocations []*profile.Location) (map[uint64]*profile.Function, error) {
+func (p *Profiler) resolveKernelFunctions(kernelLocations []*profile.Location) (map[uint64]*profile.Function, error) {
 	kernelAddresses := map[uint64]struct{}{}
 	for _, kloc := range kernelLocations {
 		kernelAddresses[kloc.Address] = struct{}{}
@@ -691,7 +684,7 @@ func (p *CgroupProfiler) resolveKernelFunctions(kernelLocations []*profile.Locat
 }
 
 // readUserStack reads the user stack trace from the stacktraces ebpf map into the given buffer.
-func (p *CgroupProfiler) readUserStack(userStackID int32, stack *stack) error {
+func (p *Profiler) readUserStack(userStackID int32, stack *stack) error {
 	if userStackID == 0 {
 		p.metrics.failedStackUnwindingAttempts.WithLabelValues("user").Inc()
 		return errors.New("user stack ID is 0, probably stack unwinding failed")
@@ -711,7 +704,7 @@ func (p *CgroupProfiler) readUserStack(userStackID int32, stack *stack) error {
 }
 
 // readKernelStack reads the kernel stack trace from the stacktraces ebpf map into the given buffer.
-func (p *CgroupProfiler) readKernelStack(kernelStackID int32, stack *stack) error {
+func (p *Profiler) readKernelStack(kernelStackID int32, stack *stack) error {
 	if kernelStackID == 0 {
 		p.metrics.failedStackUnwindingAttempts.WithLabelValues("kernel").Inc()
 		return errors.New("kernel stack ID is 0, probably stack unwinding failed")
@@ -731,7 +724,7 @@ func (p *CgroupProfiler) readKernelStack(kernelStackID int32, stack *stack) erro
 }
 
 // readValue reads the value of the given key from the counts ebpf map.
-func (p *CgroupProfiler) readValue(keyBytes []byte) (uint64, error) {
+func (p *Profiler) readValue(keyBytes []byte) (uint64, error) {
 	valueBytes, err := p.bpfMaps.counts.GetValue(unsafe.Pointer(&keyBytes[0]))
 	if err != nil {
 		return 0, fmt.Errorf("get count value: %w", err)
@@ -740,7 +733,7 @@ func (p *CgroupProfiler) readValue(keyBytes []byte) (uint64, error) {
 }
 
 // normalizeProfile calculates the base addresses of a position-independent binary and normalizes captured locations accordingly.
-func (p *CgroupProfiler) normalizeAddress(m *profile.Mapping, pid uint32, addr uint64) uint64 {
+func (p *Profiler) normalizeAddress(m *profile.Mapping, pid uint32, addr uint64) uint64 {
 	if m == nil {
 		return addr
 	}
@@ -768,7 +761,7 @@ func (p *CgroupProfiler) normalizeAddress(m *profile.Mapping, pid uint32, addr u
 }
 
 // writeProfile sends the profile using the designated write client..
-func (p *CgroupProfiler) writeProfile(ctx context.Context, prof *profile.Profile) error {
+func (p *Profiler) writeProfile(ctx context.Context, prof *profile.Profile) error {
 	//nolint:forcetypeassert
 	buf := p.profileBufferPool.Get().(*bytes.Buffer)
 	defer func() {
@@ -806,8 +799,8 @@ func (p *CgroupProfiler) writeProfile(ctx context.Context, prof *profile.Profile
 	return err
 }
 
-// bumpMemlockRlimit increases the current memlock limit to a value more reasonable for the profiler's needs.
-func (p *CgroupProfiler) bumpMemlockRlimit() error {
+// bumpMemlfockRlimit increases the current memlock limit to a value more reasonable for the profiler's needs.
+func (p *Profiler) bumpMemlockRlimit() error {
 	// TODO(kakkoyun): https://github.com/cilium/ebpf/blob/v0.8.1/rlimit/rlimit.go
 	rLimit := syscall.Rlimit{
 		Cur: uint64(defaultRLimit),

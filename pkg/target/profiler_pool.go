@@ -139,7 +139,7 @@ func (pp *ProfilerPool) Sync(ctx context.Context, tg []*Group) {
 		h := labelsetToLabels(newTarget.labelSet).Hash()
 
 		if _, found := pp.activeTargets[h]; !found {
-			newProfiler := profiler.NewCgroupProfiler(
+			newProfiler := profiler.NewProfiler(
 				pp.logger,
 				pp.reg,
 				pp.ksymCache,
