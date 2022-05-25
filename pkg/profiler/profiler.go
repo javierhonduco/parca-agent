@@ -49,6 +49,7 @@ import (
 	"github.com/parca-dev/parca-agent/pkg/objectfile"
 	"github.com/parca-dev/parca-agent/pkg/perf"
 )
+import "strconv"
 
 //go:embed parca-agent.bpf.o
 var bpfObj []byte
@@ -529,13 +530,19 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 		return fmt.Errorf("failed iterator: %w", it.Err())
 	}
 
-	prof, err := p.buildProfile(ctx, captureTime, samples[0], locations, kernelLocations, userLocations, mappings, kernelMapping)
+	profiles, err := p.buildProfiles(ctx, captureTime, samples, locations, kernelLocations, userLocations, mappings, kernelMapping)
 	if err != nil {
 		return fmt.Errorf("failed to build profile: %w", err)
 	}
 
-	if err := p.writeProfile(ctx, prof); err != nil {
-		level.Error(p.logger).Log("msg", "failed to send profile", "err", err)
+	for cgroupID, prof := range profiles {
+		meta := make(map[string]string)
+		meta["sexy_cgroup_id"] = strconv.FormatUint(cgroupID, 10)
+		level.Error(p.logger).Log("msg", "cgroupIDcgroupIDcgroupIDcgroupID", "cgroupID", cgroupID)
+
+		if err := p.writeProfile(ctx, prof, meta); err != nil {
+			level.Error(p.logger).Log("msg", "failed to send profile", "err", err)
+		}
 	}
 
 	if err := p.bpfMaps.clean(); err != nil {
@@ -558,81 +565,84 @@ func (p *Profiler) loopReport(lastProfileTakenAt time.Time, lastError error) {
 	p.lastError = lastError
 }
 
-func (p *Profiler) buildProfile(
+func (p *Profiler) buildProfiles(
 	ctx context.Context,
 	captureTime time.Time,
-	//samples map[uint64]map[stackType]*profile.Sample,
-	samples map[stackType]*profile.Sample,
+	samples map[uint64]map[stackType]*profile.Sample,
 	locations []*profile.Location,
 	kernelLocations []*profile.Location,
 	userLocations map[uint32][]*profile.Location,
 	mappings *maps.Mapping,
 	kernelMapping *profile.Mapping,
-) (*profile.Profile, error) {
-	prof := &profile.Profile{
-		SampleType: []*profile.ValueType{{
-			Type: "samples",
-			Unit: "count",
-		}},
-		TimeNanos:     captureTime.UnixNano(),
-		DurationNanos: int64(p.profilingDuration),
-
-		// We sample at 100Hz, which is every 10 Million nanoseconds.
-		PeriodType: &profile.ValueType{
-			Type: "cpu",
-			Unit: "nanoseconds",
-		},
-		Period: 10000000,
-	}
+) (map[uint64]*profile.Profile, error) {
+	profiles := map[uint64]*profile.Profile{}
 
 	// Build Profile from samples, locations and mappings.
 	// cgroups first, ignore them
-	//for _, sample := range samples {
-	for _, s := range samples {
-		prof.Sample = append(prof.Sample, s)
-	}
-	//}
+	for cgroupID, sample := range samples {
+		prof := &profile.Profile{
+			SampleType: []*profile.ValueType{{
+				Type: "samples",
+				Unit: "count",
+			}},
+			TimeNanos:     captureTime.UnixNano(),
+			DurationNanos: int64(p.profilingDuration),
 
-	// Locations.
-	prof.Location = locations
-
-	// User mappings.
-	var mappedFiles []maps.ProcessMapping
-	prof.Mapping, mappedFiles = mappings.AllMappings()
-
-	// Upload debug information of the discovered object files.
-	go func() {
-		var objFiles []*objectfile.MappedObjectFile
-		for _, mf := range mappedFiles {
-			objFile, err := p.objCache.ObjectFileForProcess(mf.PID, mf.Mapping)
-			if err != nil {
-				continue
-			}
-			objFiles = append(objFiles, objFile)
+			// We sample at 100Hz, which is every 10 Million nanoseconds.
+			PeriodType: &profile.ValueType{
+				Type: "cpu",
+				Unit: "nanoseconds",
+			},
+			Period: 10000000,
 		}
-		p.debugInfo.EnsureUploaded(ctx, objFiles)
-	}()
 
-	// Kernel mappings.
-	kernelMapping.ID = uint64(len(prof.Mapping)) + 1
-	prof.Mapping = append(prof.Mapping, kernelMapping)
+		for _, s := range sample {
+			prof.Sample = append(prof.Sample, s)
+		}
 
-	kernelFunctions, err := p.resolveKernelFunctions(kernelLocations)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve kernel functions: %w", err)
+		// Locations.
+		prof.Location = locations
+
+		// User mappings.
+		var mappedFiles []maps.ProcessMapping
+		prof.Mapping, mappedFiles = mappings.AllMappings()
+
+		// Upload debug information of the discovered object files.
+		go func() {
+			var objFiles []*objectfile.MappedObjectFile
+			for _, mf := range mappedFiles {
+				objFile, err := p.objCache.ObjectFileForProcess(mf.PID, mf.Mapping)
+				if err != nil {
+					continue
+				}
+				objFiles = append(objFiles, objFile)
+			}
+			p.debugInfo.EnsureUploaded(ctx, objFiles)
+		}()
+
+		// Kernel mappings.
+		kernelMapping.ID = uint64(len(prof.Mapping)) + 1
+		prof.Mapping = append(prof.Mapping, kernelMapping)
+
+		kernelFunctions, err := p.resolveKernelFunctions(kernelLocations)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve kernel functions: %w", err)
+		}
+		for _, f := range kernelFunctions {
+			f.ID = uint64(len(prof.Function)) + 1
+			prof.Function = append(prof.Function, f)
+		}
+
+		userFunctions := p.resolveJITedFunctions(userLocations)
+		for _, f := range userFunctions {
+			f.ID = uint64(len(prof.Function)) + 1
+			prof.Function = append(prof.Function, f)
+		}
+
+		profiles[cgroupID] = prof
 	}
-	for _, f := range kernelFunctions {
-		f.ID = uint64(len(prof.Function)) + 1
-		prof.Function = append(prof.Function, f)
-	}
 
-	userFunctions := p.resolveJITedFunctions(userLocations)
-	for _, f := range userFunctions {
-		f.ID = uint64(len(prof.Function)) + 1
-		prof.Function = append(prof.Function, f)
-	}
-
-	return prof, nil
+	return profiles, nil
 }
 
 // resolveKernelFunctions resolves the just-in-time compiled functions using the perf map.
@@ -778,7 +788,7 @@ func (p *Profiler) normalizeAddress(m *profile.Mapping, pid uint32, addr uint64)
 }
 
 // writeProfile sends the profile using the designated write client..
-func (p *Profiler) writeProfile(ctx context.Context, prof *profile.Profile) error {
+func (p *Profiler) writeProfile(ctx context.Context, prof *profile.Profile, extraLabels map[string]string) error {
 	//nolint:forcetypeassert
 	buf := p.profileBufferPool.Get().(*bytes.Buffer)
 	defer func() {
@@ -801,32 +811,25 @@ func (p *Profiler) writeProfile(ctx context.Context, prof *profile.Profile) erro
 		i++
 	}
 
-	otherlabels := labelOldFormat
-	otherlabels = append(otherlabels, &profilestorepb.Label{
-		Name:  string("OMG"),
-		Value: string("this is a test"),
-	})
+	for key, value := range extraLabels {
+		labelOldFormat = append(labelOldFormat, &profilestorepb.Label{
+			Name:  string(key),
+			Value: string(value),
+		})
+		i++
+	}
 
 	// NOTICE: This is a batch client, so nothing will be sent immediately.
 	// Make sure that the batch write client has the correct behaviour if you change any parameters.
 	_, err := p.writeClient.WriteRaw(ctx, &profilestorepb.WriteRawRequest{
 		Normalized: true,
 		Series: []*profilestorepb.RawProfileSeries{
-			// for unit x
 			{
 				Labels: &profilestorepb.LabelSet{Labels: labelOldFormat},
 				Samples: []*profilestorepb.RawSample{{
 					RawProfile: buf.Bytes(),
 				}},
 			},
-			// for unit y
-			{
-				Labels: &profilestorepb.LabelSet{Labels: otherlabels},
-				Samples: []*profilestorepb.RawSample{{
-					RawProfile: buf.Bytes(),
-				}},
-			},
-			// k8s lol
 		},
 	})
 
