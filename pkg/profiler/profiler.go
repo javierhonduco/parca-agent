@@ -394,8 +394,7 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 			File: "[kernel.kallsyms]",
 		}
 
-		//samples         = map[uint64]map[stackType]*profile.Sample{}
-		samples = map[stackType]*profile.Sample{}
+		samples = map[uint64]map[stackType]*profile.Sample{}
 
 		locations       = []*profile.Location{}
 		kernelLocations = []*profile.Location{}
@@ -417,7 +416,7 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 			return fmt.Errorf("read stack count key: %w", err)
 		}
 
-		cgroupID := key.CgroupID
+		cgroupID := uint64(0) // key.CgroupID
 		level.Debug(p.logger).Log("msg", "cgroupID", "cgroupID", cgroupID)
 
 		// Twice the stack depth because we have a user and a potential Kernel stack.
@@ -452,9 +451,13 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 			continue
 		}
 
-		//samples[cgroupID] = map[stackType]*profile.Sample{}
-		//sample, ok := samples[cgroupID][stack]
-		sample, ok := samples[stack]
+		_, ok := samples[cgroupID]
+		if !ok {
+			// we haven't seen this cgroup yet
+			samples[cgroupID] = map[stackType]*profile.Sample{}
+		}
+
+		sample, ok := samples[cgroupID][stack]
 		if ok {
 			// We already have a sample with this stack trace, so just add
 			// it to the previous one.
@@ -518,15 +521,15 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 			Value:    []int64{int64(value)},
 			Location: sampleLocations,
 		}
-		//samples[cgroupID][stack] = sample
-		samples[stack] = sample
+
+		samples[cgroupID][stack] = sample
 
 	}
 	if it.Err() != nil {
 		return fmt.Errorf("failed iterator: %w", it.Err())
 	}
 
-	prof, err := p.buildProfile(ctx, captureTime, samples, locations, kernelLocations, userLocations, mappings, kernelMapping)
+	prof, err := p.buildProfile(ctx, captureTime, samples[0], locations, kernelLocations, userLocations, mappings, kernelMapping)
 	if err != nil {
 		return fmt.Errorf("failed to build profile: %w", err)
 	}
