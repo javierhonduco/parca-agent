@@ -49,6 +49,7 @@ import (
 	"github.com/parca-dev/parca-agent/pkg/objectfile"
 	"github.com/parca-dev/parca-agent/pkg/perf"
 )
+import "strconv"
 
 //go:embed parca-agent.bpf.o
 var bpfObj []byte
@@ -396,10 +397,12 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 
 		samples = map[uint64]map[stackType]*profile.Sample{}
 
-		locations       = []*profile.Location{}
-		kernelLocations = []*profile.Location{}
-		userLocations   = map[uint32][]*profile.Location{} // PID -> []*profile.Location
-		locationIndices = map[[2]uint64]int{}              // [PID, Address] -> index in locations
+		locations       = map[uint64][]*profile.Location{}
+		kernelLocations = map[uint64][]*profile.Location{}
+		userLocations   = map[uint64]map[uint32][]*profile.Location{} // PID -> []*profile.Location
+		locationIndices = map[[2]uint64]int{}                         // [PID, Address] -> index in locations
+		//////////////////
+		sampleLocations = map[uint64][]*profile.Location{}
 	)
 
 	// TODO(kakkoyun): Use libbpf batch functions.
@@ -416,6 +419,7 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 			return fmt.Errorf("read stack count key: %w", err)
 		}
 
+		// todo change depending on whether we want different profiles or no
 		cgroupID := uint64(0) // key.CgroupID
 		level.Debug(p.logger).Log("msg", "cgroupID", "cgroupID", cgroupID)
 
@@ -464,7 +468,12 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 			sample.Value[0] += int64(value)
 			continue
 		}
-		sampleLocations := []*profile.Location{}
+
+		sampleLocations[cgroupID] = []*profile.Location{}
+		_, ok = userLocations[cgroupID]
+		if !ok {
+			userLocations[cgroupID] = map[uint32][]*profile.Location{}
+		}
 
 		// Collect Kernel stack trace samples.
 		for _, addr := range stack[stackDepth:] {
@@ -473,17 +482,17 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 				// PID 0 not possible so we'll use it to identify the kernel.
 				locationIndex, ok := locationIndices[key]
 				if !ok {
-					locationIndex = len(locations)
+					locationIndex = len(locations[cgroupID])
 					l := &profile.Location{
 						ID:      uint64(locationIndex + 1),
 						Address: addr,
 						Mapping: kernelMapping,
 					}
-					locations = append(locations, l)
-					kernelLocations = append(kernelLocations, l)
+					locations[cgroupID] = append(locations[cgroupID], l)
+					kernelLocations[cgroupID] = append(kernelLocations[cgroupID], l)
 					locationIndices[key] = locationIndex
 				}
-				sampleLocations = append(sampleLocations, locations[locationIndex])
+				sampleLocations[cgroupID] = append(sampleLocations[cgroupID], locations[cgroupID][locationIndex])
 			}
 		}
 
@@ -493,7 +502,7 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 				k := [2]uint64{uint64(key.PID), addr}
 				locationIndex, ok := locationIndices[k]
 				if !ok {
-					locationIndex = len(locations)
+					locationIndex = len(locations[cgroupID])
 
 					m, err := mappings.PIDAddrMapping(key.PID, addr)
 					if err != nil {
@@ -509,17 +518,17 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 						Mapping: m,
 					}
 
-					locations = append(locations, l)
-					userLocations[key.PID] = append(userLocations[key.PID], l)
+					locations[cgroupID] = append(locations[cgroupID], l)
+					userLocations[cgroupID][key.PID] = append(userLocations[cgroupID][key.PID], l)
 					locationIndices[k] = locationIndex
 				}
-				sampleLocations = append(sampleLocations, locations[locationIndex])
+				sampleLocations[cgroupID] = append(sampleLocations[cgroupID], locations[cgroupID][locationIndex])
 			}
 		}
 
 		sample = &profile.Sample{
 			Value:    []int64{int64(value)},
-			Location: sampleLocations,
+			Location: sampleLocations[cgroupID],
 		}
 
 		samples[cgroupID][stack] = sample
@@ -530,15 +539,15 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 		return fmt.Errorf("failed iterator: %w", it.Err())
 	}
 
-	for _, sample := range samples {
-		prof, err := p.buildProfile(ctx, captureTime, sample, locations, kernelLocations, userLocations, mappings, kernelMapping)
+	for cgroupID, sample := range samples {
+		prof, err := p.buildProfile(ctx, captureTime, sample, locations[cgroupID], kernelLocations[cgroupID], userLocations[cgroupID], mappings, kernelMapping)
 		if err != nil {
 			return fmt.Errorf("failed to build profile: %w", err)
 		}
 
 		meta := make(map[string]string)
-		/* 		meta["sexy_cgroup_id"] = strconv.FormatUint(cgroupID, 10)
-		   		level.Error(p.logger).Log("msg", "cgroupIDcgroupIDcgroupIDcgroupID", "cgroupID", cgroupID) */
+		meta["sexy_cgroup_id"] = strconv.FormatUint(cgroupID, 10)
+		level.Error(p.logger).Log("cgroupID", cgroupID)
 
 		if err := p.writeProfile(ctx, prof, meta); err != nil {
 			level.Error(p.logger).Log("msg", "failed to send profile", "err", err)
