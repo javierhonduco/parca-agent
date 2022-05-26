@@ -49,7 +49,6 @@ import (
 	"github.com/parca-dev/parca-agent/pkg/objectfile"
 	"github.com/parca-dev/parca-agent/pkg/perf"
 )
-import "strconv"
 
 //go:embed parca-agent.bpf.o
 var bpfObj []byte
@@ -526,29 +525,29 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 		samples[cgroupID][stack] = sample
 
 	}
+	// we have read all the data
 	if it.Err() != nil {
 		return fmt.Errorf("failed iterator: %w", it.Err())
 	}
 
-	profiles, err := p.buildProfiles(ctx, captureTime, samples, locations, kernelLocations, userLocations, mappings, kernelMapping)
-	if err != nil {
-		return fmt.Errorf("failed to build profile: %w", err)
-	}
+	for _, sample := range samples {
+		prof, err := p.buildProfile(ctx, captureTime, sample, locations, kernelLocations, userLocations, mappings, kernelMapping)
+		if err != nil {
+			return fmt.Errorf("failed to build profile: %w", err)
+		}
 
-	for cgroupID, prof := range profiles {
 		meta := make(map[string]string)
-		meta["sexy_cgroup_id"] = strconv.FormatUint(cgroupID, 10)
-		level.Error(p.logger).Log("msg", "cgroupIDcgroupIDcgroupIDcgroupID", "cgroupID", cgroupID)
+		/* 		meta["sexy_cgroup_id"] = strconv.FormatUint(cgroupID, 10)
+		   		level.Error(p.logger).Log("msg", "cgroupIDcgroupIDcgroupIDcgroupID", "cgroupID", cgroupID) */
 
 		if err := p.writeProfile(ctx, prof, meta); err != nil {
 			level.Error(p.logger).Log("msg", "failed to send profile", "err", err)
 		}
-	}
 
-	if err := p.bpfMaps.clean(); err != nil {
-		level.Warn(p.logger).Log("msg", "failed to clean BPF maps", "err", err)
+		if err := p.bpfMaps.clean(); err != nil {
+			level.Warn(p.logger).Log("msg", "failed to clean BPF maps", "err", err)
+		}
 	}
-
 	ksymCacheStats := p.ksymCache.Stats
 	level.Debug(p.logger).Log("msg", "Kernel symbol cache stats", "stats", ksymCacheStats.String())
 	p.metrics.ksymCacheHitRate.WithLabelValues("hits").Add(float64(ksymCacheStats.Hits))
@@ -565,84 +564,79 @@ func (p *Profiler) loopReport(lastProfileTakenAt time.Time, lastError error) {
 	p.lastError = lastError
 }
 
-func (p *Profiler) buildProfiles(
+func (p *Profiler) buildProfile(
 	ctx context.Context,
 	captureTime time.Time,
-	samples map[uint64]map[stackType]*profile.Sample,
+	sample map[stackType]*profile.Sample,
 	locations []*profile.Location,
 	kernelLocations []*profile.Location,
 	userLocations map[uint32][]*profile.Location,
 	mappings *maps.Mapping,
 	kernelMapping *profile.Mapping,
-) (map[uint64]*profile.Profile, error) {
-	profiles := map[uint64]*profile.Profile{}
+) (*profile.Profile, error) {
 
 	// Build Profile from samples, locations and mappings.
-	// cgroups first, ignore them
-	for cgroupID, sample := range samples {
-		prof := &profile.Profile{
-			SampleType: []*profile.ValueType{{
-				Type: "samples",
-				Unit: "count",
-			}},
-			TimeNanos:     captureTime.UnixNano(),
-			DurationNanos: int64(p.profilingDuration),
 
-			// We sample at 100Hz, which is every 10 Million nanoseconds.
-			PeriodType: &profile.ValueType{
-				Type: "cpu",
-				Unit: "nanoseconds",
-			},
-			Period: 10000000,
-		}
+	prof := &profile.Profile{
+		SampleType: []*profile.ValueType{{
+			Type: "samples",
+			Unit: "count",
+		}},
+		TimeNanos:     captureTime.UnixNano(),
+		DurationNanos: int64(p.profilingDuration),
 
-		for _, s := range sample {
-			prof.Sample = append(prof.Sample, s)
-		}
-
-		// Locations.
-		prof.Location = locations
-
-		// User mappings.
-		var mappedFiles []maps.ProcessMapping
-		prof.Mapping, mappedFiles = mappings.AllMappings()
-
-		// Upload debug information of the discovered object files.
-		go func() {
-			var objFiles []*objectfile.MappedObjectFile
-			for _, mf := range mappedFiles {
-				objFile, err := p.objCache.ObjectFileForProcess(mf.PID, mf.Mapping)
-				if err != nil {
-					continue
-				}
-				objFiles = append(objFiles, objFile)
-			}
-			p.debugInfo.EnsureUploaded(ctx, objFiles)
-		}()
-
-		// Kernel mappings.
-		kernelMapping.ID = uint64(len(prof.Mapping)) + 1
-		prof.Mapping = append(prof.Mapping, kernelMapping)
-
-		kernelFunctions, err := p.resolveKernelFunctions(kernelLocations)
-		if err != nil {
-			return nil, fmt.Errorf("failed to resolve kernel functions: %w", err)
-		}
-		for _, f := range kernelFunctions {
-			f.ID = uint64(len(prof.Function)) + 1
-			prof.Function = append(prof.Function, f)
-		}
-
-		userFunctions := p.resolveJITedFunctions(userLocations)
-		for _, f := range userFunctions {
-			f.ID = uint64(len(prof.Function)) + 1
-			prof.Function = append(prof.Function, f)
-		}
-
-		profiles[cgroupID] = prof
+		// We sample at 100Hz, which is every 10 Million nanoseconds.
+		PeriodType: &profile.ValueType{
+			Type: "cpu",
+			Unit: "nanoseconds",
+		},
+		Period: 10000000,
 	}
 
-	return profiles, nil
+	for _, s := range sample {
+		prof.Sample = append(prof.Sample, s)
+	}
+
+	// Locations.
+	prof.Location = locations
+
+	// User mappings.
+	var mappedFiles []maps.ProcessMapping
+	prof.Mapping, mappedFiles = mappings.AllMappings()
+
+	// Upload debug information of the discovered object files.
+	go func() {
+		var objFiles []*objectfile.MappedObjectFile
+		for _, mf := range mappedFiles {
+			objFile, err := p.objCache.ObjectFileForProcess(mf.PID, mf.Mapping)
+			if err != nil {
+				continue
+			}
+			objFiles = append(objFiles, objFile)
+		}
+		p.debugInfo.EnsureUploaded(ctx, objFiles)
+	}()
+
+	// Kernel mappings.
+	kernelMapping.ID = uint64(len(prof.Mapping)) + 1
+	prof.Mapping = append(prof.Mapping, kernelMapping)
+
+	kernelFunctions, err := p.resolveKernelFunctions(kernelLocations)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve kernel functions: %w", err)
+	}
+	for _, f := range kernelFunctions {
+		f.ID = uint64(len(prof.Function)) + 1
+		prof.Function = append(prof.Function, f)
+	}
+
+	userFunctions := p.resolveJITedFunctions(userLocations)
+	for _, f := range userFunctions {
+		f.ID = uint64(len(prof.Function)) + 1
+		prof.Function = append(prof.Function, f)
+	}
+
+	return prof, nil
 }
 
 // resolveKernelFunctions resolves the just-in-time compiled functions using the perf map.
