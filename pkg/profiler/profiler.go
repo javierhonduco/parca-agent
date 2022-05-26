@@ -43,14 +43,13 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/parca-dev/parca-agent/pkg/byteorder"
+	"github.com/parca-dev/parca-agent/pkg/containerutils/docker"
 	"github.com/parca-dev/parca-agent/pkg/debuginfo"
-	"github.com/parca-dev/parca-agent/pkg/k8s"
 	"github.com/parca-dev/parca-agent/pkg/ksym"
 	"github.com/parca-dev/parca-agent/pkg/maps"
 	"github.com/parca-dev/parca-agent/pkg/objectfile"
 	"github.com/parca-dev/parca-agent/pkg/perf"
-)
-import (
+
 	"strconv"
 )
 
@@ -79,17 +78,6 @@ type bpfMaps struct {
 // The Go spec says the address of a struct’s fields must be naturally aligned.
 // https://dave.cheney.net/2015/10/09/padding-is-hard
 // TODO: https://github.com/parca-dev/parca-agent/issues/207
-
-/*
-typedef struct stack_count_key {
-  u64 cgroup_id;
-  u32 pid;
-  int user_stack_id;
-  int kernel_stack_id;
-} stack_count_key_t;
-*/
-
-/* import "C" */
 
 type stackCountKey struct {
 	CgroupID      uint64
@@ -396,11 +384,8 @@ func (p *Profiler) Run(ctx context.Context) error {
 		}
 
 		captureTime := time.Now()
-		////////////
-		cgroupIDs := p.processMetadata()
-		//os.Exit(3)
-		///////////
-		err := p.profileLoop(ctx, captureTime, cgroupIDs)
+		processesMetadata, _ := p.fetchMetadata()                  // TODO handle error
+		err := p.profileLoop(ctx, captureTime, *processesMetadata) // TODO, would Go really copy the whole dict or the container
 		if err != nil {
 			level.Warn(p.logger).Log("msg", "profile loop error", "err", err)
 		}
@@ -409,23 +394,32 @@ func (p *Profiler) Run(ctx context.Context) error {
 	}
 }
 
-func (p *Profiler) processMetadata() map[uint64]struct{} {
+func (p *Profiler) fetchMetadata() (*map[profileGroupKey]map[string]string, error) { // cgroup -> metadata key -> metadata val
 	// Retrieve all the special metadata for different container runtimes.
-	// We need:
+	// We need the:
 	// - cgroup id
 	// - extra labels attached to it
-	res := make(map[uint64]struct{})
-	c, _ := k8s.NewCRIClient(p.logger, nil, "")
-	r, _ := c.ListContainers()
+	res := make(map[profileGroupKey]map[string]string)
 
-	for _, container := range r {
-		fmt.Printf("container cgroupID %v\n", container.CgroupID)
-		res[container.CgroupID] = struct{}{}
+	// TODO, do this for other container orchestrators and engines
+	client, err := docker.NewDockerClient(docker.DefaultSocketPath)
+	if err != nil {
+		return nil, err
 	}
-	return res
+	defer client.Close()
+	containers, _ := client.ListContainers()
+
+	for _, container := range containers {
+		cgroupID := profileGroupKey(container.CgroupID)
+		fmt.Printf("container cgroupID %v\n", cgroupID)
+		res[cgroupID] = make(map[string]string)
+		// add extra metadata
+		res[cgroupID]["container_runtime"] = "docker"
+	}
+	return &res, nil
 }
 
-func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time, cgroupIDs map[uint64]struct{}) (err error) {
+func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time, cgroupIDs map[profileGroupKey]map[string]string) (err error) {
 	var (
 		mappings      = maps.NewMapping(p.pidMappingFileCache)
 		kernelMapping = &profile.Mapping{
@@ -438,7 +432,6 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time, cgrou
 		kernelLocations = map[profileGroupKey][]*profile.Location{}
 		userLocations   = map[profileGroupKey]map[uint32][]*profile.Location{} // PID -> []*profile.Location
 		locationIndices = map[profileGroupKey]map[[2]uint64]int{}              // [PID, Address] -> index in locations
-		//////////////////
 		sampleLocations = map[profileGroupKey][]*profile.Location{}
 	)
 
@@ -458,12 +451,18 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time, cgrou
 
 		// todo change depending on whether we want different profiles or no
 		cgroupID := profileGroupKey(key.CgroupID)
-		_, ok := cgroupIDs[key.CgroupID]
+		level.Debug(p.logger).Log("msg", "cgroupID", cgroupID)
+
+		_, ok := cgroupIDs[cgroupID]
 		if !ok {
-			level.Debug(p.logger).Log("msg", "skipping cgroup", "have", key.CgroupID, "possible", cgroupIDs)
-			continue
+			// Hack: if we haven't discovered this CGroup as running as part of
+			// docker or other container runtimes, we don't want to send it
+			// as a different profile. Let's set cgroup=0 for them and aggregate
+			// them in the same profile
+
+			// TODO, aggregate in the same profile
+			// cgroupID = profileGroupKey(0)
 		}
-		level.Debug(p.logger).Log("msg", "===cgroupID", "cgroupID", cgroupID)
 
 		// Twice the stack depth because we have a user and a potential Kernel stack.
 		// Read order matters, since we read from the key buffer.
@@ -597,10 +596,21 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time, cgrou
 			return fmt.Errorf("failed to build profile: %w", err)
 		}
 
-		meta := make(map[string]string)
-		meta["sexy_cgroup_id"] = strconv.FormatUint(uint64(cgroupID), 10)
+		extraMetadata := make(map[string]string)
+		// hack for processes that we want to squish together in the same pprof
+		// profile
+		if cgroupID != 0 {
+			extraMetadata["cgroup_id"] = strconv.FormatUint(uint64(cgroupID), 10)
+		}
 
-		if err := p.writeProfile(ctx, prof, meta); err != nil {
+		cgroupMeta, ok := cgroupIDs[cgroupID]
+		if ok {
+			extraMetadata = cgroupMeta
+		}
+
+		// We are sending several pprofs in separate writeProfile() calls
+		// as otherwise the RPC message gets too large at times
+		if err := p.writeProfile(ctx, prof, extraMetadata); err != nil {
 			level.Error(p.logger).Log("msg", "failed to send profile", "err", err)
 		}
 
