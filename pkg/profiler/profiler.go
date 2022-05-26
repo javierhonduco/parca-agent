@@ -83,6 +83,8 @@ type stackCountKey struct {
 	CgroupID      uint64
 }
 
+type profileGroupKey uint64
+
 func (m bpfMaps) clean() error {
 	// BPF iterators need the previous value to iterate to the next, so we
 	// can only delete the "previous" item once we've already iterated to
@@ -395,14 +397,14 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 			File: "[kernel.kallsyms]",
 		}
 
-		samples = map[uint64]map[stackType]*profile.Sample{}
+		samples = map[profileGroupKey]map[stackType]*profile.Sample{}
 
-		locations       = map[uint64][]*profile.Location{}
-		kernelLocations = map[uint64][]*profile.Location{}
-		userLocations   = map[uint64]map[uint32][]*profile.Location{} // PID -> []*profile.Location
-		locationIndices = map[[2]uint64]int{}                         // [PID, Address] -> index in locations
+		locations       = map[profileGroupKey][]*profile.Location{}
+		kernelLocations = map[profileGroupKey][]*profile.Location{}
+		userLocations   = map[profileGroupKey]map[uint32][]*profile.Location{} // PID -> []*profile.Location
+		locationIndices = map[profileGroupKey]map[[2]uint64]int{}              // [PID, Address] -> index in locations
 		//////////////////
-		sampleLocations = map[uint64][]*profile.Location{}
+		sampleLocations = map[profileGroupKey][]*profile.Location{}
 	)
 
 	// TODO(kakkoyun): Use libbpf batch functions.
@@ -420,7 +422,7 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 		}
 
 		// todo change depending on whether we want different profiles or no
-		cgroupID := uint64(0) // key.CgroupID
+		cgroupID := profileGroupKey(key.CgroupID)
 		level.Debug(p.logger).Log("msg", "cgroupID", "cgroupID", cgroupID)
 
 		// Twice the stack depth because we have a user and a potential Kernel stack.
@@ -474,13 +476,17 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 		if !ok {
 			userLocations[cgroupID] = map[uint32][]*profile.Location{}
 		}
+		_, ok = locationIndices[cgroupID]
+		if !ok {
+			locationIndices[cgroupID] = map[[2]uint64]int{}
+		}
 
 		// Collect Kernel stack trace samples.
 		for _, addr := range stack[stackDepth:] {
 			if addr != uint64(0) {
 				key := [2]uint64{0, addr}
 				// PID 0 not possible so we'll use it to identify the kernel.
-				locationIndex, ok := locationIndices[key]
+				locationIndex, ok := locationIndices[cgroupID][key]
 				if !ok {
 					locationIndex = len(locations[cgroupID])
 					l := &profile.Location{
@@ -490,9 +496,12 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 					}
 					locations[cgroupID] = append(locations[cgroupID], l)
 					kernelLocations[cgroupID] = append(kernelLocations[cgroupID], l)
-					locationIndices[key] = locationIndex
+					locationIndices[cgroupID][key] = locationIndex
 				}
-				sampleLocations[cgroupID] = append(sampleLocations[cgroupID], locations[cgroupID][locationIndex])
+				sampleLocations[cgroupID] = append(
+					sampleLocations[cgroupID],
+					locations[cgroupID][locationIndex],
+				)
 			}
 		}
 
@@ -500,7 +509,7 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 		for _, addr := range stack[:stackDepth] {
 			if addr != uint64(0) {
 				k := [2]uint64{uint64(key.PID), addr}
-				locationIndex, ok := locationIndices[k]
+				locationIndex, ok := locationIndices[cgroupID][k]
 				if !ok {
 					locationIndex = len(locations[cgroupID])
 
@@ -520,9 +529,12 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 
 					locations[cgroupID] = append(locations[cgroupID], l)
 					userLocations[cgroupID][key.PID] = append(userLocations[cgroupID][key.PID], l)
-					locationIndices[k] = locationIndex
+					locationIndices[cgroupID][k] = locationIndex
 				}
-				sampleLocations[cgroupID] = append(sampleLocations[cgroupID], locations[cgroupID][locationIndex])
+				sampleLocations[cgroupID] = append(
+					sampleLocations[cgroupID],
+					locations[cgroupID][locationIndex],
+				)
 			}
 		}
 
@@ -546,7 +558,7 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 		}
 
 		meta := make(map[string]string)
-		meta["sexy_cgroup_id"] = strconv.FormatUint(cgroupID, 10)
+		meta["sexy_cgroup_id"] = strconv.FormatUint(uint64(cgroupID), 10)
 		level.Error(p.logger).Log("cgroupID", cgroupID)
 
 		if err := p.writeProfile(ctx, prof, meta); err != nil {
