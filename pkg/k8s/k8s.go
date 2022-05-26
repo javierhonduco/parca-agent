@@ -77,7 +77,7 @@ func NewK8sClient(logger log.Logger, nodeName, socketPath string) (*Client, erro
 
 	// get a CRI client to talk to the CRI handling pods in this node
 	// TODO: when to close it?
-	criClient, err := newCRIClient(logger, node, socketPath)
+	criClient, err := NewCRIClient(logger, node, socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("create CRI client: %w", err)
 	}
@@ -95,14 +95,14 @@ func (c *Client) Clientset() kubernetes.Interface {
 	return c.clientset
 }
 
-func newCRIClient(logger log.Logger, node *v1.Node, socketPath string) (containerutils.CRIClient, error) {
-	criVersion := node.Status.NodeInfo.ContainerRuntimeVersion
-	list := strings.Split(criVersion, "://")
-	if len(list) < 1 {
-		return nil, fmt.Errorf("impossible to get CRI type from %s", criVersion)
-	}
-
-	criType := list[0]
+func NewCRIClient(logger log.Logger, node *v1.Node, socketPath string) (containerutils.CRIClient, error) {
+	/* 	criVersion := node.Status.NodeInfo.ContainerRuntimeVersion
+	   	list := strings.Split(criVersion, "://")
+	   	if len(list) < 1 {
+	   		return nil, fmt.Errorf("impossible to get CRI type from %s", criVersion)
+	   	}
+	*/
+	criType := "docker" //list[0]
 
 	switch criType {
 	case "docker":

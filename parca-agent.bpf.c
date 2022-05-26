@@ -59,10 +59,10 @@ typedef __u64 stack_trace_type[MAX_STACK_DEPTH];
 /*============================= INTERNAL STRUCTS ============================*/
 
 typedef struct stack_count_key {
+  u64 cgroup_id;
   u32 pid;
   int user_stack_id;
   int kernel_stack_id;
-  u64 cgroup_id;
 } stack_count_key_t;
 
 /*================================ MAPS =====================================*/

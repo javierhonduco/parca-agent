@@ -44,12 +44,15 @@ import (
 
 	"github.com/parca-dev/parca-agent/pkg/byteorder"
 	"github.com/parca-dev/parca-agent/pkg/debuginfo"
+	"github.com/parca-dev/parca-agent/pkg/k8s"
 	"github.com/parca-dev/parca-agent/pkg/ksym"
 	"github.com/parca-dev/parca-agent/pkg/maps"
 	"github.com/parca-dev/parca-agent/pkg/objectfile"
 	"github.com/parca-dev/parca-agent/pkg/perf"
 )
-import "strconv"
+import (
+	"strconv"
+)
 
 //go:embed parca-agent.bpf.o
 var bpfObj []byte
@@ -76,11 +79,23 @@ type bpfMaps struct {
 // The Go spec says the address of a struct’s fields must be naturally aligned.
 // https://dave.cheney.net/2015/10/09/padding-is-hard
 // TODO: https://github.com/parca-dev/parca-agent/issues/207
+
+/*
+typedef struct stack_count_key {
+  u64 cgroup_id;
+  u32 pid;
+  int user_stack_id;
+  int kernel_stack_id;
+} stack_count_key_t;
+*/
+
+/* import "C" */
+
 type stackCountKey struct {
+	CgroupID      uint64
 	PID           uint32
 	UserStackID   int32
 	KernelStackID int32
-	CgroupID      uint64
 }
 
 type profileGroupKey uint64
@@ -381,7 +396,11 @@ func (p *Profiler) Run(ctx context.Context) error {
 		}
 
 		captureTime := time.Now()
-		err := p.profileLoop(ctx, captureTime)
+		////////////
+		cgroupIDs := p.processMetadata()
+		//os.Exit(3)
+		///////////
+		err := p.profileLoop(ctx, captureTime, cgroupIDs)
 		if err != nil {
 			level.Warn(p.logger).Log("msg", "profile loop error", "err", err)
 		}
@@ -390,7 +409,23 @@ func (p *Profiler) Run(ctx context.Context) error {
 	}
 }
 
-func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err error) {
+func (p *Profiler) processMetadata() map[uint64]struct{} {
+	// Retrieve all the special metadata for different container runtimes.
+	// We need:
+	// - cgroup id
+	// - extra labels attached to it
+	res := make(map[uint64]struct{})
+	c, _ := k8s.NewCRIClient(p.logger, nil, "")
+	r, _ := c.ListContainers()
+
+	for _, container := range r {
+		fmt.Printf("container cgroupID %v\n", container.CgroupID)
+		res[container.CgroupID] = struct{}{}
+	}
+	return res
+}
+
+func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time, cgroupIDs map[uint64]struct{}) (err error) {
 	var (
 		mappings      = maps.NewMapping(p.pidMappingFileCache)
 		kernelMapping = &profile.Mapping{
@@ -423,7 +458,12 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 
 		// todo change depending on whether we want different profiles or no
 		cgroupID := profileGroupKey(key.CgroupID)
-		level.Debug(p.logger).Log("msg", "cgroupID", "cgroupID", cgroupID)
+		_, ok := cgroupIDs[key.CgroupID]
+		if !ok {
+			level.Debug(p.logger).Log("msg", "skipping cgroup", "have", key.CgroupID, "possible", cgroupIDs)
+			continue
+		}
+		level.Debug(p.logger).Log("msg", "===cgroupID", "cgroupID", cgroupID)
 
 		// Twice the stack depth because we have a user and a potential Kernel stack.
 		// Read order matters, since we read from the key buffer.
@@ -457,7 +497,7 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 			continue
 		}
 
-		_, ok := samples[cgroupID]
+		_, ok = samples[cgroupID]
 		if !ok {
 			// we haven't seen this cgroup yet
 			samples[cgroupID] = map[stackType]*profile.Sample{}

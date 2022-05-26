@@ -74,9 +74,15 @@ uint64_t get_cgroupid(char *path) {
 */
 import "C"
 
+type ContainerMetadata struct {
+	CgroupID uint64
+	Tags     string // todo change to a proper datastructure
+}
+
 type CRIClient interface {
 	Close() error
 	PIDFromContainerID(containerID string) (int, error)
+	ListContainers() ([]*ContainerMetadata, error)
 }
 
 func CgroupPathV2AddMountpoint(path string) (string, error) {

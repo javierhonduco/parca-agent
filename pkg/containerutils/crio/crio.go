@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/go-kit/log"
+	"github.com/parca-dev/parca-agent/pkg/containerutils"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	pb "k8s.io/cri-api/pkg/apis/runtime/v1alpha2"
@@ -104,4 +105,8 @@ func (c *Client) PIDFromContainerID(containerID string) (int, error) {
 	}
 
 	return ci.PID, nil
+}
+
+func (c *Client) ListContainers() ([]*containerutils.ContainerMetadata, error) {
+	return nil, nil
 }

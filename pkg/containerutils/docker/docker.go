@@ -20,7 +20,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/client"
+	"github.com/parca-dev/parca-agent/pkg/containerutils"
 )
 
 const (
@@ -73,4 +75,39 @@ func (c *Client) PIDFromContainerID(containerID string) (int, error) {
 	}
 
 	return containerJSON.State.Pid, nil
+}
+
+func (c *Client) ListContainers() ([]*containerutils.ContainerMetadata, error) {
+	containers, err := c.client.ContainerList(context.Background(), types.ContainerListOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	r := []*containerutils.ContainerMetadata{}
+
+	for _, container := range containers {
+		//fmt.Printf("container id %s\n", container.ID)
+		pid, err := c.PIDFromContainerID(fmt.Sprintf("docker://%s", container.ID))
+		if err != nil {
+			// todo
+		}
+		//fmt.Printf("container pid %v\n", pid)
+
+		_, cgroupPathV2, err := containerutils.GetCgroupPaths(pid)
+		if err != nil {
+			// todo
+		}
+		cgroupPathV2WithMountpoint, _ := containerutils.CgroupPathV2AddMountpoint(cgroupPathV2)
+		cgroupID, _ := containerutils.GetCgroupID(cgroupPathV2WithMountpoint)
+		// todo
+
+		//fmt.Printf("container cgroupID %v\n", cgroupID)
+
+		r = append(r, &containerutils.ContainerMetadata{
+			CgroupID: cgroupID,
+			Tags:     "runtime=docker",
+		})
+	}
+
+	return r, nil
 }
