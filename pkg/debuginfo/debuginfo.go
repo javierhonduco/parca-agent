@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"time"
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
@@ -48,8 +47,7 @@ func New(logger log.Logger, client Client, tmp string) *DebugInfo {
 	return &DebugInfo{
 		logger: logger,
 		existsCache: cache.New(
-			cache.WithMaximumSize(128),                // Arbitrary cache size.
-			cache.WithExpireAfterWrite(2*time.Minute), // Arbitrary period.
+			cache.WithMaximumSize(256), // Arbitrary cache size.
 		),
 		debugInfoFileCache: cache.New(cache.WithMaximumSize(128)), // Arbitrary cache size.
 		client:             client,
@@ -98,6 +96,8 @@ func (di *DebugInfo) EnsureUploaded(ctx context.Context, objFiles []*objectfile.
 			level.Error(logger).Log("msg", "failed to upload debug information", "err", err)
 			continue
 		}
+		// debuginfo was correctly upload to the server
+		di.existsCache.Put(buildID, struct{}{})
 		level.Debug(logger).Log("msg", "debug information uploaded successfully")
 	}
 

@@ -559,7 +559,6 @@ func (p *Profiler) profileLoop(ctx context.Context, captureTime time.Time) (err 
 
 		meta := make(map[string]string)
 		meta["sexy_cgroup_id"] = strconv.FormatUint(uint64(cgroupID), 10)
-		level.Error(p.logger).Log("cgroupID", cgroupID)
 
 		if err := p.writeProfile(ctx, prof, meta); err != nil {
 			level.Error(p.logger).Log("msg", "failed to send profile", "err", err)
