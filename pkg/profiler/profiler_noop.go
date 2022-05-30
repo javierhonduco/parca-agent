@@ -19,26 +19,21 @@ import (
 	"time"
 
 	"github.com/go-kit/log"
-	"github.com/parca-dev/parca-agent/pkg/debuginfo"
-	"github.com/parca-dev/parca-agent/pkg/ksym"
-	"github.com/parca-dev/parca-agent/pkg/objectfile"
+
 	profilestorepb "github.com/parca-dev/parca/gen/proto/go/parca/profilestore/v1alpha1"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
+
+	"github.com/parca-dev/parca-agent/pkg/debuginfo"
+	"github.com/parca-dev/parca-agent/pkg/ksym"
+	"github.com/parca-dev/parca-agent/pkg/objectfile"
 )
 
-type Profiler interface {
-	Name() string
-	Run(ctx context.Context) error
-	Stop()
+// This profiler does nothing. It serves as a skeleton of what other will have
+// to be implemented when adding a new profiler.
+type NoopProfiler struct{}
 
-	// todo re-evaluate these
-	Labels() model.LabelSet
-	LastProfileTakenAt() time.Time
-	LastError() error
-}
-
-type NewProfilerFunc func(
+func NewNoopProfiler(
 	logger log.Logger,
 	reg prometheus.Registerer,
 	ksymCache *ksym.Cache,
@@ -48,11 +43,29 @@ type NewProfilerFunc func(
 	target model.LabelSet,
 	profilingDuration time.Duration,
 	tmp string,
-) Profiler
+) Profiler {
+	return &NoopProfiler{}
+}
 
-type ProfilerType int64
+func (p *NoopProfiler) Name() string {
+	return "noop-profiler"
+}
 
-const (
-	ProfilerTypeNoop ProfilerType = iota
-	ProfilerTypeCpu
-)
+func (p *NoopProfiler) Stop() {
+}
+
+func (p *NoopProfiler) Run(ctx context.Context) error {
+	return nil
+}
+
+func (p *NoopProfiler) Labels() model.LabelSet {
+	return model.LabelSet{}
+}
+
+func (p *NoopProfiler) LastProfileTakenAt() time.Time {
+	return time.Now()
+}
+
+func (p *NoopProfiler) LastError() error {
+	return nil
+}

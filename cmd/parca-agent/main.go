@@ -17,7 +17,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -26,6 +25,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"time"
 
@@ -314,16 +314,12 @@ func main() {
 				level.Error(logger).Log("msg", "failed to write profile", "err", err)
 			}
 			return
-		}
+		} */
 		http.NotFound(w, r)
 	})
 
 	ctx := context.Background()
 	var g run.Group
-
-	pp.AddProfiler(
-		ctx, "cpu-cycles",
-	)
 
 	{
 		ctx, cancel := context.WithCancel(ctx)
@@ -389,6 +385,11 @@ func main() {
 			cancel()
 		})
 	}
+
+	// Add profilers.
+	pp.AddProfiler(
+		ctx, profiler.NewCpuProfiler,
+	)
 
 	/* 	// Run group for target manager
 	   	{
