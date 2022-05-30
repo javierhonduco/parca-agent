@@ -49,7 +49,7 @@ type Profiler interface {
 type ProfilerPool struct {
 	mtx               *sync.RWMutex
 	activeTargets     map[uint64]*Target
-	activeProfilers   map[uint64]Profiler
+	activeProfilers   map[string]Profiler
 	externalLabels    model.LabelSet
 	logger            log.Logger
 	reg               prometheus.Registerer
@@ -77,7 +77,7 @@ func NewProfilerPool(
 	return &ProfilerPool{
 		mtx:               &sync.RWMutex{},
 		activeTargets:     map[uint64]*Target{},
-		activeProfilers:   map[uint64]Profiler{},
+		activeProfilers:   map[string]Profiler{},
 		externalLabels:    externalLabels,
 		logger:            logger,
 		reg:               reg,
@@ -91,18 +91,46 @@ func NewProfilerPool(
 	}
 }
 
-func (pp *ProfilerPool) Profilers() []Profiler {
+func (pp *ProfilerPool) Profilers() map[string]Profiler {
 	pp.mtx.RLock()
 	defer pp.mtx.RUnlock()
 
-	res := make([]Profiler, 0, len(pp.activeProfilers))
-	for _, profiler := range pp.activeProfilers {
-		res = append(res, profiler)
+	res := map[string]Profiler{}
+	for name, profiler := range pp.activeProfilers {
+		res[name] = profiler
 	}
+
 	return res
 }
 
-func (pp *ProfilerPool) Sync(ctx context.Context, tg []*Group) {
+func (pp *ProfilerPool) AddProfiler(ctx context.Context, profilerName string) {
+	pp.mtx.Lock()
+	defer pp.mtx.Unlock()
+
+	newTarget := Target{}
+	newProfiler := profiler.NewProfiler(
+		pp.logger,
+		pp.reg,
+		pp.ksymCache,
+		pp.objCache,
+		pp.writeClient,
+		pp.debugInfoClient,
+		newTarget.labelSet,
+		pp.profilingDuration,
+		pp.tmp,
+	)
+
+	go func() {
+		err := newProfiler.Run(ctx)
+		level.Warn(pp.logger).Log("msg", "profiler ended with error", "error", err, "labels", newProfiler.Labels().String())
+	}()
+
+	//pp.activeTargets[profilerName] = newTarget
+	pp.activeProfilers[profilerName] = newProfiler
+
+}
+
+/* func (pp *ProfilerPool) Sync(ctx context.Context, tg []*Group) {
 	pp.mtx.Lock()
 	defer pp.mtx.Unlock()
 
@@ -168,7 +196,7 @@ func (pp *ProfilerPool) Sync(ctx context.Context, tg []*Group) {
 			delete(pp.activeProfilers, h)
 		}
 	}
-}
+} */
 
 func labelsetToLabels(labelSet model.LabelSet) labels.Labels {
 	ls := make(labels.Labels, 0, len(labelSet))

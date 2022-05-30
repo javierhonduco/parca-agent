@@ -26,7 +26,6 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"sort"
 	"strings"
 	"time"
 
@@ -41,7 +40,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/model"
-	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
 	"golang.org/x/sys/unix"
 	"google.golang.org/grpc"
@@ -52,9 +50,10 @@ import (
 	"github.com/parca-dev/parca-agent/pkg/buildinfo"
 	"github.com/parca-dev/parca-agent/pkg/debuginfo"
 	"github.com/parca-dev/parca-agent/pkg/discovery"
+	"github.com/parca-dev/parca-agent/pkg/ksym"
 	"github.com/parca-dev/parca-agent/pkg/logger"
+	"github.com/parca-dev/parca-agent/pkg/objectfile"
 	"github.com/parca-dev/parca-agent/pkg/target"
-	"github.com/parca-dev/parca-agent/pkg/template"
 )
 
 var (
@@ -168,9 +167,14 @@ func main() {
 			flags.Node,
 		))
 	}
-	tm := target.NewManager(
-		logger, reg,
-		profileListener, debugInfoClient,
+
+	pp := target.NewProfilerPool(
+		logger,
+		reg,
+		ksym.NewKsymCache(logger),
+		objectfile.NewCache(5),
+		profileStoreClient,
+		debugInfoClient,
 		flags.ProfilingDuration,
 		externalLabels(flags.ExternalLabel, flags.Node),
 		flags.SamplingRatio,
@@ -189,70 +193,71 @@ func main() {
 		}
 		if r.URL.Path == "/" {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			activeProfilers := tm.ActiveProfilers()
 
-			statusPage := template.StatusPage{}
+			/*
+							activeProfilers := pp.Profilers()
 
-			for _, profilerSet := range activeProfilers {
-				for _, profiler := range profilerSet {
-					profileType := ""
-					labelSet := labels.Labels{}
+				statusPage := template.StatusPage{}
+					for profilerName, profiler := range activeProfilers {
+					for _, profiler := range profilerSet {
+						profileType := ""
+						labelSet := labels.Labels{}
 
-					for name, value := range profiler.Labels() {
-						if name == "__name__" {
-							profileType = string(value)
+						for name, value := range profiler.Labels() {
+							if name == "__name__" {
+								profileType = string(value)
+							}
+							if name != "__name__" {
+								labelSet = append(labelSet,
+									labels.Label{Name: string(name), Value: string(value)})
+							}
 						}
-						if name != "__name__" {
-							labelSet = append(labelSet,
-								labels.Label{Name: string(name), Value: string(value)})
+
+						sort.Sort(labelSet)
+
+						q := url.Values{}
+						q.Add("debug", "1")
+						q.Add("query", labelSet.String())
+
+						statusPage.ActiveProfilers = append(statusPage.ActiveProfilers, template.ActiveProfiler{
+							Type:         profileType,
+							Labels:       labelSet,
+							LastTakenAgo: time.Since(profiler.LastProfileTakenAt()),
+							Error:        profiler.LastError(),
+							Link:         fmt.Sprintf("/query?%s", q.Encode()),
+						})
+					}
+				}
+
+				sort.Slice(statusPage.ActiveProfilers, func(j, k int) bool {
+					a := statusPage.ActiveProfilers[j].Labels
+					b := statusPage.ActiveProfilers[k].Labels
+
+					l := len(a)
+					if len(b) < l {
+						l = len(b)
+					}
+
+					for i := 0; i < l; i++ {
+						if a[i].Name != b[i].Name {
+							return a[i].Name < b[i].Name
+						}
+						if a[i].Value != b[i].Value {
+							return a[i].Value < b[i].Value
 						}
 					}
+					// If all labels so far were in common, the set with fewer labels comes first.
+					return len(a)-len(b) < 0
+				})
 
-					sort.Sort(labelSet)
-
-					q := url.Values{}
-					q.Add("debug", "1")
-					q.Add("query", labelSet.String())
-
-					statusPage.ActiveProfilers = append(statusPage.ActiveProfilers, template.ActiveProfiler{
-						Type:         profileType,
-						Labels:       labelSet,
-						LastTakenAgo: time.Since(profiler.LastProfileTakenAt()),
-						Error:        profiler.LastError(),
-						Link:         fmt.Sprintf("/query?%s", q.Encode()),
-					})
+				err := template.StatusPageTemplate.Execute(w, statusPage)
+				if err != nil {
+					http.Error(w,
+						"Unexpected error occurred while rendering status page: "+err.Error(),
+						http.StatusInternalServerError,
+					)
 				}
-			}
-
-			sort.Slice(statusPage.ActiveProfilers, func(j, k int) bool {
-				a := statusPage.ActiveProfilers[j].Labels
-				b := statusPage.ActiveProfilers[k].Labels
-
-				l := len(a)
-				if len(b) < l {
-					l = len(b)
-				}
-
-				for i := 0; i < l; i++ {
-					if a[i].Name != b[i].Name {
-						return a[i].Name < b[i].Name
-					}
-					if a[i].Value != b[i].Value {
-						return a[i].Value < b[i].Value
-					}
-				}
-				// If all labels so far were in common, the set with fewer labels comes first.
-				return len(a)-len(b) < 0
-			})
-
-			err := template.StatusPageTemplate.Execute(w, statusPage)
-			if err != nil {
-				http.Error(w,
-					"Unexpected error occurred while rendering status page: "+err.Error(),
-					http.StatusInternalServerError,
-				)
-			}
-
+			*/
 			return
 		}
 
@@ -315,6 +320,11 @@ func main() {
 
 	ctx := context.Background()
 	var g run.Group
+
+	pp.AddProfiler(
+		ctx, "cpu-cycles",
+	)
+
 	{
 		ctx, cancel := context.WithCancel(ctx)
 		g.Add(func() error {
@@ -380,17 +390,17 @@ func main() {
 		})
 	}
 
-	// Run group for target manager
-	{
-		ctx, cancel := context.WithCancel(ctx)
-		g.Add(func() error {
-			level.Debug(logger).Log("msg", "starting target manager")
-			return tm.Run(ctx, m.SyncCh())
-		}, func(error) {
-			cancel()
-		})
-	}
-
+	/* 	// Run group for target manager
+	   	{
+	   		ctx, cancel := context.WithCancel(ctx)
+	   		g.Add(func() error {
+	   			level.Debug(logger).Log("msg", "starting target manager")
+	   			return pp.Run(ctx, m.SyncCh())
+	   		}, func(error) {
+	   			cancel()
+	   		})
+	   	}
+	*/
 	// Run group for http server
 	{
 		ln, err := net.Listen("tcp", flags.HTTPAddress)
