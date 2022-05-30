@@ -31,21 +31,8 @@ import (
 	"github.com/parca-dev/parca-agent/pkg/profiler"
 )
 
-type Target struct {
-	labelSet model.LabelSet
-}
-
-/*
-type Profiler interface {
-	Labels() model.LabelSet
-	LastProfileTakenAt() time.Time
-	LastError() error
-	Stop()
-}
-*/
 type ProfilerPool struct {
 	mtx               *sync.RWMutex
-	activeTargets     map[uint64]*Target
 	activeProfilers   map[string]profiler.Profiler
 	externalLabels    model.LabelSet
 	logger            log.Logger
@@ -73,7 +60,6 @@ func NewProfilerPool(
 ) *ProfilerPool {
 	return &ProfilerPool{
 		mtx:               &sync.RWMutex{},
-		activeTargets:     map[uint64]*Target{},
 		activeProfilers:   map[string]profiler.Profiler{},
 		externalLabels:    externalLabels,
 		logger:            logger,
@@ -104,7 +90,7 @@ func (pp *ProfilerPool) AddProfiler(ctx context.Context, profilerFunc profiler.N
 	pp.mtx.Lock()
 	defer pp.mtx.Unlock()
 
-	newTarget := Target{}
+	labelSet := model.LabelSet{}
 	newProfiler := profilerFunc(
 		pp.logger,
 		pp.reg,
@@ -112,16 +98,15 @@ func (pp *ProfilerPool) AddProfiler(ctx context.Context, profilerFunc profiler.N
 		pp.objCache,
 		pp.writeClient,
 		pp.debugInfoClient,
-		newTarget.labelSet,
+		labelSet,
 		pp.profilingDuration,
 		pp.tmp,
 	)
 	go func() {
 		err := newProfiler.Run(ctx)
-		level.Warn(pp.logger).Log("msg", "profiler ended with error", "error", err, "labels", newProfiler.Labels().String())
+		level.Warn(pp.logger).Log("msg", "profiler ended with error", "error", err, "profilerName", newProfiler.Name(), "labels", newProfiler.Labels().String())
 	}()
 
-	//pp.activeTargets[profilerName] = newTarget
 	pp.activeProfilers[newProfiler.Name()] = newProfiler
 
 	return nil
