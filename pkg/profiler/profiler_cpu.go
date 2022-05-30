@@ -601,6 +601,7 @@ func (p *CpuProfiler) profileLoop(ctx context.Context, captureTime time.Time, cg
 		}
 
 		extraMetadata := make(map[string]string)
+		extraMetadata["profiler_name"] = p.Name()
 		// hack for processes that we want to squish together in the same pprof
 		// profile
 		if cgroupID != 0 {

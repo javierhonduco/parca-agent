@@ -21,7 +21,6 @@ import (
 	"github.com/google/pprof/profile"
 	profilestorepb "github.com/parca-dev/parca/gen/proto/go/parca/profilestore/v1alpha1"
 	"github.com/prometheus/common/model"
-	"github.com/prometheus/prometheus/model/labels"
 	"google.golang.org/grpc"
 )
 
@@ -87,7 +86,7 @@ func (l *profileListener) removeObserver(o *observer) {
 	}
 }
 
-func (l *profileListener) NextMatchingProfile(ctx context.Context, matchers []*labels.Matcher) (*profile.Profile, error) {
+func (l *profileListener) NextMatchingProfile(ctx context.Context, profilerName string) (*profile.Profile, error) {
 	pCh := make(chan []byte)
 	defer close(pCh)
 
@@ -101,12 +100,11 @@ func (l *profileListener) NextMatchingProfile(ctx context.Context, matchers []*l
 				profileLabels[model.LabelName(label.Name)] = model.LabelValue(label.Value)
 			}
 
-			for _, matcher := range matchers {
-				labelValue := profileLabels[model.LabelName(matcher.Name)]
-				if !matcher.Matches(string(labelValue)) {
-					continue
-				}
+			labelValue := profileLabels[model.LabelName("profiler_name")]
+			if labelValue != model.LabelValue(profilerName) {
+				continue
 			}
+
 			searchedSeries = series
 			break
 		}

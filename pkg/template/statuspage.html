@@ -54,7 +54,6 @@ tr:hover {
             <table style="width:100%">
                 <tr>
                     <th>Profile Type</th>
-                    <th>Labels</th>
                     <th>Last Profile Taken</th>
                     <th>Error</th>
                     <th>Show Profile</th>
@@ -63,11 +62,6 @@ tr:hover {
                 <tr>
                     <td>
                         {{ .Type }}
-                    </td>
-                    <td>
-                        {{range $label := .Labels}}
-                        <span class='label'>{{.Name}}="{{.Value}}"</span>
-                        {{end}}
                     </td>
                     <td>
                         {{ .LastTakenAgo }} ago

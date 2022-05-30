@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -40,7 +41,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/model"
-	"github.com/prometheus/prometheus/promql/parser"
 	"golang.org/x/sys/unix"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -53,7 +53,9 @@ import (
 	"github.com/parca-dev/parca-agent/pkg/ksym"
 	"github.com/parca-dev/parca-agent/pkg/logger"
 	"github.com/parca-dev/parca-agent/pkg/objectfile"
+	"github.com/parca-dev/parca-agent/pkg/profiler"
 	"github.com/parca-dev/parca-agent/pkg/target"
+	"github.com/parca-dev/parca-agent/pkg/template"
 )
 
 var (
@@ -173,7 +175,7 @@ func main() {
 		reg,
 		ksym.NewKsymCache(logger),
 		objectfile.NewCache(5),
-		profileStoreClient,
+		profileListener,
 		debugInfoClient,
 		flags.ProfilingDuration,
 		externalLabels(flags.ExternalLabel, flags.Node),
@@ -194,97 +196,72 @@ func main() {
 		if r.URL.Path == "/" {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
-			/*
-							activeProfilers := pp.Profilers()
+			activeProfilers := pp.Profilers()
 
-				statusPage := template.StatusPage{}
-					for profilerName, profiler := range activeProfilers {
-					for _, profiler := range profilerSet {
-						profileType := ""
-						labelSet := labels.Labels{}
+			statusPage := template.StatusPage{}
+			for profilerName, profiler := range activeProfilers {
 
-						for name, value := range profiler.Labels() {
-							if name == "__name__" {
-								profileType = string(value)
-							}
-							if name != "__name__" {
-								labelSet = append(labelSet,
-									labels.Label{Name: string(name), Value: string(value)})
-							}
-						}
+				q := url.Values{}
+				q.Add("debug", "1")
+				q.Add("profiler_name", profilerName)
 
-						sort.Sort(labelSet)
-
-						q := url.Values{}
-						q.Add("debug", "1")
-						q.Add("query", labelSet.String())
-
-						statusPage.ActiveProfilers = append(statusPage.ActiveProfilers, template.ActiveProfiler{
-							Type:         profileType,
-							Labels:       labelSet,
-							LastTakenAgo: time.Since(profiler.LastProfileTakenAt()),
-							Error:        profiler.LastError(),
-							Link:         fmt.Sprintf("/query?%s", q.Encode()),
-						})
-					}
-				}
-
-				sort.Slice(statusPage.ActiveProfilers, func(j, k int) bool {
-					a := statusPage.ActiveProfilers[j].Labels
-					b := statusPage.ActiveProfilers[k].Labels
-
-					l := len(a)
-					if len(b) < l {
-						l = len(b)
-					}
-
-					for i := 0; i < l; i++ {
-						if a[i].Name != b[i].Name {
-							return a[i].Name < b[i].Name
-						}
-						if a[i].Value != b[i].Value {
-							return a[i].Value < b[i].Value
-						}
-					}
-					// If all labels so far were in common, the set with fewer labels comes first.
-					return len(a)-len(b) < 0
+				statusPage.ActiveProfilers = append(statusPage.ActiveProfilers, template.ActiveProfiler{
+					Type:         profilerName,
+					LastTakenAgo: time.Since(profiler.LastProfileTakenAt()),
+					Error:        profiler.LastError(),
+					Link:         fmt.Sprintf("/query?%s", q.Encode()),
 				})
 
-				err := template.StatusPageTemplate.Execute(w, statusPage)
-				if err != nil {
-					http.Error(w,
-						"Unexpected error occurred while rendering status page: "+err.Error(),
-						http.StatusInternalServerError,
-					)
+			}
+
+			sort.Slice(statusPage.ActiveProfilers, func(j, k int) bool {
+				a := statusPage.ActiveProfilers[j].Labels
+				b := statusPage.ActiveProfilers[k].Labels
+
+				l := len(a)
+				if len(b) < l {
+					l = len(b)
 				}
-			*/
+
+				for i := 0; i < l; i++ {
+					if a[i].Name != b[i].Name {
+						return a[i].Name < b[i].Name
+					}
+					if a[i].Value != b[i].Value {
+						return a[i].Value < b[i].Value
+					}
+				}
+				// If all labels so far were in common, the set with fewer labels comes first.
+				return len(a)-len(b) < 0
+			})
+
+			err := template.StatusPageTemplate.Execute(w, statusPage)
+			if err != nil {
+				http.Error(w,
+					"Unexpected error occurred while rendering status page: "+err.Error(),
+					http.StatusInternalServerError,
+				)
+			}
+
 			return
 		}
 
 		if strings.HasPrefix(r.URL.Path, "/query") {
 			ctx := r.Context()
-			query := r.URL.Query().Get("query")
-			matchers, err := parser.ParseMetricSelector(query)
-			if err != nil {
-				http.Error(w,
-					`query incorrectly formatted, expecting selector in form of: {name1="value1",name2="value2"}`,
-					http.StatusBadRequest,
-				)
-				return
-			}
+			profilerName := r.URL.Query().Get("profiler_name")
 
 			// We profile every 10 seconds so leaving 1s wiggle room. If after
 			// 11s no profile has matched, then there is very likely no
-			// profiler running that matches the label-set.
+			// profiler running that matches the profiler name.
 			ctx, cancel := context.WithTimeout(ctx, time.Second*11)
 			defer cancel()
 
-			profile, err := profileListener.NextMatchingProfile(ctx, matchers)
+			profile, err := profileListener.NextMatchingProfile(ctx, profilerName)
 			if profile == nil || errors.Is(err, context.Canceled) {
 				http.Error(w,
-					"No profile taken in the last 11 seconds that matches the requested label-matchers query. "+
-						"Profiles are taken every 10 seconds so either the profiler matching the label-set has stopped profiling, "+
-						"or the label-set was incorrect.",
+					"No profile taken in the last 11 seconds that matches the requested profiler name query. "+
+						"Profiles are taken every 10 seconds so either the profiler matching has stopped profiling, "+
+						"or the profiler name was incorrect.",
 					http.StatusNotFound,
 				)
 				return
@@ -298,7 +275,7 @@ func main() {
 			if v == "1" {
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
 				q := url.Values{}
-				q.Add("query", query)
+				q.Add("profiler_name", profilerName)
 
 				fmt.Fprintf(w, "<p><a href='/query?%s'>Download Pprof</a></p>\n", q.Encode())
 				fmt.Fprint(w, "<code><pre>\n")
@@ -314,7 +291,7 @@ func main() {
 				level.Error(logger).Log("msg", "failed to write profile", "err", err)
 			}
 			return
-		} */
+		}
 		http.NotFound(w, r)
 	})
 
