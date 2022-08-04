@@ -86,27 +86,25 @@ func getConfig(configFile string) (map[string]string, error) {
 
 	kernelConfig := make(map[string]string)
 
-	i, err := UnameRelease()
+	uname, err := UnameRelease()
 	if err != nil {
 		return kernelConfig, err
 	}
 
+	bootConfigPath := fmt.Sprintf("/boot/config-%s", uname)
+
 	if strings.Contains(configFile, ".gz") {
 		kernelConfig, err = readConfigFromProc(configFile)
-	}
-
-	if strings.Contains(configFile, "%s") {
-		bootConf := fmt.Sprintf(configFile, i)
-		kernelConfig, err = readConfigFromBoot(bootConf)
-	}
-
-	if strings.Contains(configFile, "") {
+	} else if strings.Contains(configFile, bootConfigPath) {
+		kernelConfig, err = readConfigFromBoot(bootConfigPath)
+	} else {
 		kernelConfig, err = readConfigFromBoot(configFile)
 	}
 
 	if len(kernelConfig) > 0 && err == nil {
 		found = true
 	}
+
 	//TODO: better error handling
 
 	if !found {

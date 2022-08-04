@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBpfConfig(t *testing.T) {
@@ -58,7 +59,7 @@ func TestBpfConfig(t *testing.T) {
 
 			//check for the file read failures
 			config, err := getConfig(tt.path)
-			assert.Equal(t, err, nil)
+			require.NoError(t, err)
 			assert.NotEmpty(t, config)
 
 			/*	isBPFEnabled, err := IsBPFEnabled(configPaths)
