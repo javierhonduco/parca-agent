@@ -409,6 +409,7 @@ func (p *CPU) ensureUnwindTables(pid int) error {
 
 		for _, sym := range syms {
 			if sym.Name == "main" {
+				// TODO ensure these are not zeroes
 				fmt.Printf("main start @ %x\n", sym.Value)
 				fmt.Printf("main end ~ @ %x\n", sym.Value+sym.Size)
 
