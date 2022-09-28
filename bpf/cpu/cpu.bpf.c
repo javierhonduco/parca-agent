@@ -210,12 +210,12 @@ static void unwind_unsupported_expression() {
   }
 }
 
-/* static void unwind_catchall_error() {
+static void unwind_catchall_error() {
   u32 *c = bpf_map_lookup_elem(&percpu_stats, &UNWIND_CATCHALL_ERROR);
   if (c) {
     *c += 1;
   }
-} */
+}
 
 static void unwind_print_stats() {
   u32 *success_counter = bpf_map_lookup_elem(&percpu_stats, &UNWIND_SUCCESS);
@@ -238,11 +238,16 @@ static void unwind_print_stats() {
     return;
   }
 
+  u32 *catchall_count = bpf_map_lookup_elem(&percpu_stats, &UNWIND_CATCHALL_ERROR);
+  if (catchall_count == NULL) {
+    return;
+  }
+
   bpf_printk("[[ stats ]]");
   bpf_printk("success=%lu", *success_counter);
   bpf_printk("unsup_expression=%lu", *unsup_expression);
   bpf_printk("truncated_counter=%lu", *truncated_counter);
-  // TODO(javierhonduco): add the catchall counter
+  bpf_printk("catchall_count=%lu", *catchall_count);
   bpf_printk("total_counter=%lu", *total_counter);
 }
 
@@ -408,6 +413,7 @@ static __always_inline int walk_user_stacktrace(bpf_user_pt_regs_t *regs,
       previous_rsp = current_rsp + found_cfa_offset;
     } else {
       bpf_printk("\t[error] register %d not valid (expected $rbp or $rsp)", found_cfa_reg);
+      unwind_catchall_error();
       return 0;
     }
     // TODO(javierhonduco): A possible check could be to see whether this value is within
@@ -415,6 +421,8 @@ static __always_inline int walk_user_stacktrace(bpf_user_pt_regs_t *regs,
     // best to add it only during development.
     if (previous_rsp == 0) {
       bpf_printk("[error] previous_rsp should not be zero.");
+      unwind_catchall_error();
+      return 0;
     }
 
     // HACK(javierhonduco): We assume that the return address is *always* 8 bytes ahead of the previous stack
@@ -425,6 +433,8 @@ static __always_inline int walk_user_stacktrace(bpf_user_pt_regs_t *regs,
     // TODO(javierhonduco): check that it looks like a valid pointer.
     if (previous_rip == 0) {
       bpf_printk("[error] previous_rip should not be zero. This can mean that the read failed.");
+      unwind_catchall_error();
+      return 0;
     }
 
     // Set rbp register.
@@ -442,6 +452,8 @@ static __always_inline int walk_user_stacktrace(bpf_user_pt_regs_t *regs,
 
       if (previous_rbp == 0) {
         bpf_printk("[error] previous_rbp should not be zero. This can mean that the read failed.");
+        unwind_catchall_error();
+        return 0;
       }
     }
 
