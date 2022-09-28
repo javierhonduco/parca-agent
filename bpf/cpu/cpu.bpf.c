@@ -40,7 +40,7 @@ char LICENSE[] SEC("license") = "GPL";
 
 #define MAX_STACK_ADDRESSES 1024 // Num of unique stack traces.
 #define MAX_ENTRIES 10240 // Num entries for the `counts` map. Unused atm. TODO(javierhonduco): use this later on.
-#define MAX_STACK_DEPTH 50 // Max depth of each stack trace to track. TODO(javierhonduco): just to debug. Set to a larger number.
+#define MAX_STACK_DEPTH 100 // Max depth of each stack trace to track. TODO(javierhonduco): just to debug. Set to a larger number.
 #define MAX_PID_MAP_SIZE 256 // Size of the `<PID, unwind_table>` mapping. Determines how many processes we can unwind.
 #define MAX_BINARY_SEARCH_DEPTH 20 // Binary search iterations. 2ˆ20 can bisect ~1_048_576 entries.
 #define MAX_UNWIND_TABLE_SIZE 130 * 1000 // Size of the unwind_table.
