@@ -280,8 +280,8 @@ func buildTableRows(fde *frame.DescriptionEntry, start uint64) []PlanTableRow {
 
 		// Deal with return address register ($rax)
 		{
-			rule, found := instructionContext.Regs[instructionContext.RetAddrReg]
-			if found {
+			rule := instructionContext.Regs[frameContext.RetAddrReg]
+			if rule != nil {
 				// nolint:exhaustive
 				switch rule.Rule {
 				case frame.RuleOffset:
@@ -298,8 +298,8 @@ func buildTableRows(fde *frame.DescriptionEntry, start uint64) []PlanTableRow {
 
 		// Deal with $rbp
 		{
-			rule, found := instructionContext.Regs[regnum.AMD64_Rbp]
-			if found {
+			rule := instructionContext.Regs[regnum.AMD64_Rbp]
+			if rule != nil {
 				// nolint:exhaustive
 				switch rule.Rule {
 				case frame.RuleOffset:
