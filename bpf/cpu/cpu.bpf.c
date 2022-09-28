@@ -300,7 +300,7 @@ static __always_inline int walk_user_stacktrace(bpf_user_pt_regs_t *regs,
     s64 found_cfa_offset = unwind_table->rows[table_idx].cfa_offset;
     s64 found_rbp_offset = unwind_table->rows[table_idx].rbp_offset;
 
-    bpf_printk("\tcfa reg: $%s, offset: %d (pc: %llx)", found_cfa_reg == X86_64_REGISTER_RSP? "rsp" : "rbp", found_cfa_offset, found_pc);
+    bpf_printk("\tcfa reg: $%s, offset: %d (row pc: %llx)", found_cfa_reg == X86_64_REGISTER_RSP? "rsp" : "rbp", found_cfa_offset, found_pc);
 
     // HACK(javierhonduco): dwarf expressions aren't supported. We set these values to the register and the offset
     // to recognise them.
@@ -391,8 +391,15 @@ int profile_cpu(struct bpf_perf_event_data *ctx) {
     // Check if we are in the kernel and do nothing.
     // TODO(javierhonduco): Improve this check.
 
-    if(ctx->regs.ip >= 0xc0000000) {
-      // bpf_printk("in kernel space");
+    u64 last_idx = unwind_table->table_len - 1;
+    // Appease the verifier.
+    if (last_idx < 0 || last_idx >= MAX_UNWIND_TABLE_SIZE) {
+      bpf_printk("\t[error] this should never happen");
+      return 0;
+    }
+
+    if(ctx->regs.ip < unwind_table->rows[0].pc || ctx->regs.ip  > unwind_table->rows[last_idx].pc) {
+      bpf_printk("IP not covered. In kernel space / bug? IP %llx", ctx->regs.ip);
       return 0;
     }
 
@@ -403,12 +410,6 @@ int profile_cpu(struct bpf_perf_event_data *ctx) {
     show_row(unwind_table, 0);
     show_row(unwind_table, 1);
     show_row(unwind_table, 2);
-    u64 last_idx = unwind_table->table_len - 1;
-    // Appease the verifier.
-    if (last_idx < 0 || last_idx >= MAX_UNWIND_TABLE_SIZE) {    
-      bpf_printk("\t[error] this should never happen");  
-      return 0;
-    }
     show_row(unwind_table, last_idx);
   }
 
