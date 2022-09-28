@@ -26,6 +26,7 @@ import (
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/google/pprof/profile"
+	"github.com/prometheus/procfs"
 
 	"github.com/parca-dev/parca-agent/internal/dwarf/frame"
 )
@@ -57,25 +58,52 @@ func (t PlanTable) Len() int           { return len(t) }
 func (t PlanTable) Less(i, j int) bool { return t[i].Loc < t[j].Loc }
 func (t PlanTable) Swap(i, j int)      { t[i], t[j] = t[j], t[i] }
 
-func (ptb *PlanTableBuilder) PlanTableForPid(pid int) (PlanTable, error) {
-	mappings, err := ptb.mappingCache.MappingForPID(pid)
+func ProcessMaps(pid int) (map[string]*procfs.ProcMap, string, error) {
+	p, err := procfs.NewProc(pid)
 	if err != nil {
-		return nil, err
+		return nil, "", fmt.Errorf("could not get process: %s", err)
+	}
+	maps, err := p.ProcMaps()
+	if err != nil {
+		return nil, "", fmt.Errorf("could not get maps: %s", err)
 	}
 
-	if len(mappings) == 0 {
-		return nil, fmt.Errorf("no mapping found for pid %d", pid)
+	filesSeen := make(map[string]*procfs.ProcMap)
+	// HACK...
+	mainExec := ""
+
+	for _, map_ := range maps {
+		path := map_.Pathname
+		if path == "" {
+			continue
+		}
+		if !strings.HasPrefix(path, "/") {
+			continue
+		}
+		if mainExec == "" {
+			mainExec = map_.Pathname
+		}
+		_, ok := filesSeen[path]
+		if ok {
+			continue
+		}
+		filesSeen[path] = map_
+	}
+
+	return filesSeen, mainExec, nil
+
+}
+func (ptb *PlanTableBuilder) PlanTableForPid(pid int) (PlanTable, error) {
+	mappedFiles, mainExec, err := ProcessMaps(pid)
+	if err != nil {
+		return nil, fmt.Errorf("error opening the maps %v", err)
 	}
 
 	res := PlanTable{}
-	for _, m := range mappings {
-		if m.BuildID == "" || m.File == "[vdso]" || m.File == "[vsyscall]" {
-			continue
-		}
+	for _, m := range mappedFiles {
+		executablePath := path.Join(fmt.Sprintf("/proc/%d/root", pid), m.Pathname)
 
-		executablePath := path.Join(fmt.Sprintf("/proc/%d/root", pid), m.File)
-
-		fmt.Println("Adding tables from", executablePath, "starting at", fmt.Sprintf("%x", m.Start))
+		fmt.Println("Adding tables from", executablePath, "starting at", fmt.Sprintf("%x", m.StartAddr))
 		fdes, err := ptb.readFDEs(executablePath, 0)
 		if err != nil {
 			level.Error(ptb.logger).Log("msg", "failed to read frame description entries", "obj", executablePath, "err", err)
@@ -85,14 +113,15 @@ func (ptb *PlanTableBuilder) PlanTableForPid(pid int) (PlanTable, error) {
 		// TODO(javierhonduco): Improve this.
 		// Seems like our main executable start address is already correct, but not the dynamic
 		// libraries, so let's skip our main executable.
-		if strings.Contains(executablePath, mappings[0].File) {
-			fmt.Println("! Start set to zero for the main binary", mappings[0].File)
-			res = append(res, buildTable(fdes, 0)...)
+		if strings.Contains(executablePath, mainExec) {
+			fmt.Println("! Start set to zero for the main binary", mainExec)
+			rows := buildTable(fdes, 0)
+			res = append(res, rows...)
 		} else {
-			res = append(res, buildTable(fdes, m.Start)...)
+			rows := buildTable(fdes, uint64(m.StartAddr))
+			res = append(res, rows...)
 		}
 	}
-
 	// Sort the entries so we can binary search over them.
 	sort.Sort(res)
 	return res, nil

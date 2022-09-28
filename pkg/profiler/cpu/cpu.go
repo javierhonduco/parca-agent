@@ -34,7 +34,6 @@ import (
 	"github.com/dustin/go-humanize"
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
-	"github.com/goburrow/cache"
 	"github.com/google/pprof/profile"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -78,9 +77,9 @@ type CPU struct {
 	metadataProviders  []profiler.MetadataProvider
 	unwindTableBuilder *unwind.PlanTableBuilder // TODO(kakkoyun): Interface.
 
-	psMapCache       profiler.ProcessMapCache
-	objFileCache     profiler.ObjectFileCache
-	unwindTableCache cache.Cache // TODO(kakkoyun): Interface.
+	psMapCache   profiler.ProcessMapCache
+	objFileCache profiler.ObjectFileCache
+	//unwindTableCache cache.Cache // TODO(kakkoyun): Interface.
 
 	metrics *metrics
 
@@ -125,7 +124,7 @@ func NewCPUProfiler(
 		objFileCache: objFileCache,
 
 		unwindTableBuilder: unwind.NewPlanTableBuilder(logger, psMapCache),
-		unwindTableCache:   cache.New(cache.WithMaximumSize(128)),
+		// unwindTableCache:   cache.New(cache.WithMaximumSize(128)),
 
 		profilingDuration: profilingDuration,
 
@@ -379,75 +378,78 @@ func (p *CPU) report(lastError error) {
 }
 
 func (p *CPU) ensureUnwindTables(pid int, compact bool) error {
-	if _, ok := p.unwindTableCache.GetIfPresent(pid); !ok {
-		pt, err := p.unwindTableBuilder.PlanTableForPid(pid)
-		if err != nil {
-			return fmt.Errorf("failed to build unwind table: %w", err)
+	pt, err := p.unwindTableBuilder.PlanTableForPid(pid)
+	if err != nil {
+		return fmt.Errorf("failed to build unwind table: %w", err)
+	}
+
+	mainLowPC, mainHighPC := uint64(0), uint64(0)
+
+	// TODO(javierhonduco): This could placed in a better spot
+	// + cached.
+	//
+	// Q: can it happen that the requested .text start address
+	// while calling mmap(2) starts at a different offset?
+	e, err := elf.Open(fmt.Sprintf("/proc/%d/exe", pid))
+	if err != nil {
+		return fmt.Errorf("failed to open elf: %w", err)
+	}
+
+	syms, symsErr := e.Symbols()
+	dynSyms, dynSymsErr := e.DynamicSymbols()
+
+	if symsErr != nil && dynSymsErr != nil {
+		return fmt.Errorf("failed to read symbols: %w", err)
+
+	}
+	syms = append(syms, dynSyms...)
+	fmt.Println("symbol count", len(syms))
+
+	for _, sym := range syms {
+		if sym.Name == "main" {
+			// TODO ensure these are not zeroes
+			fmt.Printf("main start @ %x\n", sym.Value)
+			fmt.Printf("main end ~ @ %x\n", sym.Value+sym.Size)
+
+			mainLowPC = sym.Value
+			mainHighPC = sym.Value + sym.Size + 10 // HACK(javierhonduco): last instruction is not accounted for?
+			break
 		}
 
-		mainLowPC, mainHighPC := uint64(0), uint64(0)
+		// not relocated...
+		// sym.Name == "_start"
 
-		// TODO(javierhonduco): This could placed in a better spot
-		// + cached.
-		//
-		// Q: can it happen that the requested .text start address
-		// while calling mmap(2) starts at a different offset?
-		e, err := elf.Open(fmt.Sprintf("/proc/%d/exe", pid))
-		if err != nil {
-			return fmt.Errorf("failed to open elf: %w", err)
-		}
+		// or
+		// __libc_start_call_main:
+	}
 
-		syms, symsErr := e.Symbols()
-		dynSyms, dynSymsErr := e.DynamicSymbols()
+	if mainLowPC == 0 || mainHighPC == 0 {
+		panic("could not find low and high PC for symbol 'main'")
+	}
 
-		if symsErr != nil && dynSymsErr != nil {
-			return fmt.Errorf("failed to read symbols: %w", err)
+	if compact {
+		compact := unwind.PlanTable{}
+		prevCFARegister := uint64(0)
+		prevCFAOffset := int64(0)
+		prevRBPRegisterOffset := int64(0)
 
-		}
-		syms = append(syms, dynSyms...)
-		fmt.Println("symbol count", len(syms))
-
-		for _, sym := range syms {
-			if sym.Name == "main" {
-				// TODO ensure these are not zeroes
-				fmt.Printf("main start @ %x\n", sym.Value)
-				fmt.Printf("main end ~ @ %x\n", sym.Value+sym.Size)
-
-				mainLowPC = sym.Value
-				mainHighPC = sym.Value + sym.Size + 10 // HACK(javierhonduco): last instruction is not accounted for?
-				break
+		// HACK(javierhonduco): When removing the CFA expression hack which reuses the register and offset,
+		// this would have to be rethinked.
+		for _, row := range pt {
+			newEntry := row.CFA.(unwind.Instruction).Reg != prevCFARegister || row.CFA.(unwind.Instruction).Offset != prevCFAOffset || row.RBP.Offset != prevRBPRegisterOffset
+			if newEntry {
+				compact = append(compact, row)
+				prevCFARegister = row.CFA.(unwind.Instruction).Reg
+				prevCFAOffset = row.CFA.(unwind.Instruction).Offset
+				prevRBPRegisterOffset = row.RBP.Offset
 			}
 		}
+		fmt.Println("Compacted the unwind table from", len(pt), "elements to", len(compact), "elements")
 
-		if mainLowPC == 0 || mainHighPC == 0 {
-			panic("could not find low and high PC for symbol 'main'")
-		}
-
-		if compact {
-			compact := unwind.PlanTable{}
-			prevCFARegister := uint64(0)
-			prevCFAOffset := int64(0)
-			prevRBPRegisterOffset := int64(0)
-
-			// HACK(javierhonduco): When removing the CFA expression hack which reuses the register and offset,
-			// this would have to be rethinked.
-			for _, row := range pt {
-				newEntry := row.CFA.(unwind.Instruction).Reg != prevCFARegister || row.CFA.(unwind.Instruction).Offset != prevCFAOffset || row.RBP.Offset != prevRBPRegisterOffset
-				if newEntry {
-					compact = append(compact, row)
-					prevCFARegister = row.CFA.(unwind.Instruction).Reg
-					prevCFAOffset = row.CFA.(unwind.Instruction).Offset
-					prevRBPRegisterOffset = row.RBP.Offset
-				}
-			}
-			fmt.Println("Compacted the unwind table from", len(pt), "elements to", len(compact), "elements")
-
-			pt = compact
-		}
-		if err := p.bpfMaps.updateUnwindTables(pid, pt, mainLowPC, mainHighPC); err != nil {
-			return fmt.Errorf("failed to update unwind table: %w", err)
-		}
-		p.unwindTableCache.Put(pid, struct{}{})
+		pt = compact
+	}
+	if err := p.bpfMaps.updateUnwindTables(pid, pt, mainLowPC, mainHighPC); err != nil {
+		return fmt.Errorf("failed to update unwind table: %w", err)
 	}
 	return nil
 }
