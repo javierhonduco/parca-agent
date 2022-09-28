@@ -75,7 +75,7 @@ type CPU struct {
 	profileWriter      profiler.ProfileWriter
 	debugInfoManager   profiler.DebugInfoManager
 	metadataProviders  []profiler.MetadataProvider
-	unwindTableBuilder *unwind.PlanTableBuilder // TODO(kakkoyun): Interface.
+	unwindTableBuilder *unwind.UnwindTableBuilder // TODO(kakkoyun): Interface.
 
 	psMapCache   profiler.ProcessMapCache
 	objFileCache profiler.ObjectFileCache
@@ -123,7 +123,7 @@ func NewCPUProfiler(
 		psMapCache:   psMapCache,
 		objFileCache: objFileCache,
 
-		unwindTableBuilder: unwind.NewPlanTableBuilder(logger, psMapCache),
+		unwindTableBuilder: unwind.NewUnwindTableBuilder(logger, psMapCache),
 		// unwindTableCache:   cache.New(cache.WithMaximumSize(128)),
 
 		profilingDuration: profilingDuration,
@@ -378,7 +378,7 @@ func (p *CPU) report(lastError error) {
 }
 
 func (p *CPU) ensureUnwindTables(pid int, compact bool) error {
-	pt, err := p.unwindTableBuilder.PlanTableForPid(pid)
+	pt, err := p.unwindTableBuilder.UnwindTableForPid(pid)
 	if err != nil {
 		return fmt.Errorf("failed to build unwind table: %w", err)
 	}
@@ -428,7 +428,7 @@ func (p *CPU) ensureUnwindTables(pid int, compact bool) error {
 	}
 
 	if compact {
-		compact := unwind.PlanTable{}
+		compact := unwind.UnwindTable{}
 		prevCFARegister := uint64(0)
 		prevCFAOffset := int64(0)
 		prevRBPRegisterOffset := int64(0)

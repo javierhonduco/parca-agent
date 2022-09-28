@@ -46,7 +46,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	ptb := unwind.NewPlanTableBuilder(logger, process.NewMappingFileCache(logger))
+	ptb := unwind.NewUnwindTableBuilder(logger, process.NewMappingFileCache(logger))
 	err := ptb.PrintTable(os.Stdout, executablePath, filterNops)
 	if err != nil {
 		// nolint

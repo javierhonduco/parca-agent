@@ -37,8 +37,8 @@ type MappingCache interface {
 
 // TODO(kakkoyun): Can we speed parsing using or look up using .eh_frame_hdr?
 
-// PlanTableBuilder helps to build PlanTable for a given PID.
-type PlanTableBuilder struct {
+// UnwindTableBuilder helps to build UnwindTable for a given PID.
+type UnwindTableBuilder struct {
 	logger log.Logger
 	// Note: Caching on PID alone will result in hard to debug bugs as they are recycled.
 	mappingCache MappingCache
@@ -48,15 +48,15 @@ type PlanTableBuilder struct {
 	// Note: Caching on PID alone will result in hard to debug bugs as they are recycled.
 }
 
-func NewPlanTableBuilder(logger log.Logger, mappingCache MappingCache) *PlanTableBuilder {
-	return &PlanTableBuilder{logger: logger, mappingCache: mappingCache}
+func NewUnwindTableBuilder(logger log.Logger, mappingCache MappingCache) *UnwindTableBuilder {
+	return &UnwindTableBuilder{logger: logger, mappingCache: mappingCache}
 }
 
-type PlanTable []PlanTableRow
+type UnwindTable []UnwindTableRow
 
-func (t PlanTable) Len() int           { return len(t) }
-func (t PlanTable) Less(i, j int) bool { return t[i].Loc < t[j].Loc }
-func (t PlanTable) Swap(i, j int)      { t[i], t[j] = t[j], t[i] }
+func (t UnwindTable) Len() int           { return len(t) }
+func (t UnwindTable) Less(i, j int) bool { return t[i].Loc < t[j].Loc }
+func (t UnwindTable) Swap(i, j int)      { t[i], t[j] = t[j], t[i] }
 
 func ProcessMaps(pid int) (map[string]*procfs.ProcMap, string, error) {
 	p, err := procfs.NewProc(pid)
@@ -93,13 +93,13 @@ func ProcessMaps(pid int) (map[string]*procfs.ProcMap, string, error) {
 	return filesSeen, mainExec, nil
 
 }
-func (ptb *PlanTableBuilder) PlanTableForPid(pid int) (PlanTable, error) {
+func (ptb *UnwindTableBuilder) UnwindTableForPid(pid int) (UnwindTable, error) {
 	mappedFiles, mainExec, err := ProcessMaps(pid)
 	if err != nil {
 		return nil, fmt.Errorf("error opening the maps %v", err)
 	}
 
-	res := PlanTable{}
+	res := UnwindTable{}
 	for _, m := range mappedFiles {
 		executablePath := path.Join(fmt.Sprintf("/proc/%d/root", pid), m.Pathname)
 
@@ -146,7 +146,7 @@ func registerToString(reg uint64) string {
 }
 
 // PrintTable is a debugging helper that prints the unwinding table to the given io.Writer.
-func (ptb *PlanTableBuilder) PrintTable(writer io.Writer, path string, filterNops bool) error {
+func (ptb *UnwindTableBuilder) PrintTable(writer io.Writer, path string, filterNops bool) error {
 	fdes, err := ptb.readFDEs(path, 0)
 	if err != nil {
 		return err
@@ -179,7 +179,7 @@ func (ptb *PlanTableBuilder) PrintTable(writer io.Writer, path string, filterNop
 	return nil
 }
 
-func (ptb *PlanTableBuilder) readFDEs(path string, start uint64) (frame.FrameDescriptionEntries, error) {
+func (ptb *UnwindTableBuilder) readFDEs(path string, start uint64) (frame.FrameDescriptionEntries, error) {
 	obj, err := elf.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open elf: %w", err)
@@ -211,8 +211,8 @@ func (ptb *PlanTableBuilder) readFDEs(path string, start uint64) (frame.FrameDes
 	return fdes, nil
 }
 
-func buildTable(fdes frame.FrameDescriptionEntries, start uint64) PlanTable {
-	table := make(PlanTable, 0, len(fdes))
+func buildTable(fdes frame.FrameDescriptionEntries, start uint64) UnwindTable {
+	table := make(UnwindTable, 0, len(fdes))
 	for _, fde := range fdes {
 		table = append(table, buildTableRows(fde, start)...)
 	}
@@ -223,10 +223,10 @@ func buildTable(fdes frame.FrameDescriptionEntries, start uint64) PlanTable {
 	return table
 }
 
-// PlanTableRow represents a single row in the plan table.
+// UnwindTableRow represents a single row in the plan table.
 // x86_64: rip (instruction pointer register), rsp (stack pointer register), rbp (base pointer/frame pointer register)
 // aarch64: lr, sp, fp
-type PlanTableRow struct {
+type UnwindTableRow struct {
 	// The address of the machine instruction.
 	// Each row covers a range of machine instruction, from its address (Loc) to that of the row below.
 	Loc uint64
@@ -264,8 +264,8 @@ type Instruction struct {
 	Offset int64
 }
 
-func buildTableRows(fde *frame.DescriptionEntry, start uint64) []PlanTableRow {
-	rows := make([]PlanTableRow, 0)
+func buildTableRows(fde *frame.DescriptionEntry, start uint64) []UnwindTableRow {
+	rows := make([]UnwindTableRow, 0)
 
 	frameContext := frame.ExecuteDwarfProgram(fde)
 
@@ -274,7 +274,7 @@ func buildTableRows(fde *frame.DescriptionEntry, start uint64) []PlanTableRow {
 	for _, instructionContext := range instructionContexts {
 		// fmt.Println("ret addr:", instructionContext.RetAddrReg)
 
-		row := PlanTableRow{
+		row := UnwindTableRow{
 			Loc: start + instructionContext.Loc(),
 		}
 

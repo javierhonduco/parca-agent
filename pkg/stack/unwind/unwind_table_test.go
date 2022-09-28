@@ -22,18 +22,18 @@ import (
 	"github.com/parca-dev/parca-agent/pkg/process"
 )
 
-func TestBuildPlanTable(t *testing.T) {
+func TestBuildUnwindTable(t *testing.T) {
 	logger := log.NewNopLogger()
-	ptb := NewPlanTableBuilder(logger, process.NewMappingFileCache(logger))
+	ptb := NewUnwindTableBuilder(logger, process.NewMappingFileCache(logger))
 
 	fdes, err := ptb.readFDEs("testdata/pie-dynamic", 0)
 	require.NoError(t, err)
 
-	planTable := buildTable(fdes, 0)
-	require.Equal(t, 313127, len(planTable))
-	require.Equal(t, uint64(0xfb6960), planTable[0].Loc)
-	require.Equal(t, Instruction{Op: OpCFAOffset, Offset: -8}, planTable[0].RA)
-	require.Equal(t, Instruction{Op: 3, Reg: 0x7, Offset: 8}, planTable[0].CFA)
+	UnwindTable := buildTable(fdes, 0)
+	require.Equal(t, 313127, len(UnwindTable))
+	require.Equal(t, uint64(0xfb6960), UnwindTable[0].Loc)
+	require.Equal(t, Instruction{Op: OpCFAOffset, Offset: -8}, UnwindTable[0].RA)
+	require.Equal(t, Instruction{Op: 3, Reg: 0x7, Offset: 8}, UnwindTable[0].CFA)
 }
 
 var rawExpressionResult []byte
@@ -44,7 +44,7 @@ func BenchmarkParsingLibcDwarfUnwindInformation(b *testing.B) {
 	b.ReportAllocs()
 
 	logger := log.NewNopLogger()
-	ptb := NewPlanTableBuilder(logger, process.NewMappingFileCache(logger))
+	ptb := NewUnwindTableBuilder(logger, process.NewMappingFileCache(logger))
 
 	var rawExpression []byte
 	var rbpOffset int64
@@ -85,7 +85,7 @@ func BenchmarkParsingLibPythonDwarfUnwindInformation(b *testing.B) {
 	b.ReportAllocs()
 
 	logger := log.NewNopLogger()
-	ptb := NewPlanTableBuilder(logger, process.NewMappingFileCache(logger))
+	ptb := NewUnwindTableBuilder(logger, process.NewMappingFileCache(logger))
 
 	var rawExpression []byte
 	var rbpOffset int64
