@@ -10,5 +10,6 @@ validate: build
 	../dist/eh-frame --executable libc.so.6 > tables/ours_libc_so_6.txt
 	../dist/eh-frame --executable libpython3.10.so.1.0 > tables/ours_libpython3.10.txt
 	../dist/eh-frame --executable systemd > tables/ours_systemd.txt
+	../dist/eh-frame --executable parca-agent > tables/ours_parca-agent.txt
 
 all: validate
