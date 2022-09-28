@@ -35,3 +35,89 @@ func TestBuildUnwindTable(t *testing.T) {
 	require.Equal(t, Instruction{Op: OpCFAOffset, Offset: -8}, UnwindTable[0].RA)
 	require.Equal(t, Instruction{Op: 3, Reg: 0x7, Offset: 8}, UnwindTable[0].CFA)
 }
+
+var rawExpressionResult []byte
+var rbpOffsetResult int64
+var insResult Instruction
+
+func BenchmarkParsingLibcDwarfUnwindInformation(b *testing.B) {
+	b.ReportAllocs()
+
+	logger := log.NewNopLogger()
+	ptb := NewUnwindTableBuilder(logger, process.NewMappingFileCache(logger))
+
+	var rawExpression []byte
+	var rbpOffset int64
+	var ins Instruction
+
+	for n := 0; n < b.N; n++ {
+		fdes, err := ptb.readFDEs("../../../testdata/libc.so.6", 0)
+		if err != nil {
+			panic("could not read FDEs")
+		}
+
+		for _, fde := range fdes {
+			tableRows := buildTableRows(fde, 0)
+			for _, tableRow := range tableRows {
+				switch tableRow.CFA.(type) {
+				case Instruction:
+					ins = tableRow.CFA.(Instruction)
+				case []byte:
+					rawExpression = tableRow.CFA.([]byte)
+				}
+
+				if tableRow.RBP.Op == OpUnimplemented || tableRow.RBP.Offset == 0 {
+					// u
+					rbpOffset = 0
+				} else {
+					rbpOffset = tableRow.RBP.Offset
+				}
+			}
+		}
+	}
+	// Make sure that the compiler can't optimise out the benchmark.
+	rawExpressionResult = rawExpression
+	rbpOffsetResult = rbpOffset
+	insResult = ins
+}
+
+func BenchmarkParsingLibPythonDwarfUnwindInformation(b *testing.B) {
+	b.ReportAllocs()
+
+	logger := log.NewNopLogger()
+	ptb := NewUnwindTableBuilder(logger, process.NewMappingFileCache(logger))
+
+	var rawExpression []byte
+	var rbpOffset int64
+	var ins Instruction
+
+	for n := 0; n < b.N; n++ {
+		fdes, err := ptb.readFDEs("../../../testdata/libpython3.10.so.1.0", 0)
+		if err != nil {
+			panic("could not read FDEs")
+		}
+
+		for _, fde := range fdes {
+			tableRows := buildTableRows(fde, 0)
+			for _, tableRow := range tableRows {
+				switch tableRow.CFA.(type) {
+				case Instruction:
+					ins = tableRow.CFA.(Instruction)
+				case []byte:
+					rawExpression = tableRow.CFA.([]byte)
+				}
+
+				if tableRow.RBP.Op == OpUnimplemented || tableRow.RBP.Offset == 0 {
+					// u
+					rbpOffset = 0
+				} else {
+					rbpOffset = tableRow.RBP.Offset
+				}
+			}
+		}
+	}
+	// Make sure that the compiler can't optimise out the benchmark.
+	rawExpressionResult = rawExpression
+	rbpOffsetResult = rbpOffset
+	insResult = ins
+}
