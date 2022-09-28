@@ -35,7 +35,7 @@ const (
 	stackTracesMapName = "stack_traces"
 	unwindTableMapName = "unwind_tables"
 
-	maxPlanTableSize = 130 * 1000 // // Always needs to be sync with MAX_UNWIND_TABLE_SIZE in BPF program.
+	maxUnwindTableSize = 130 * 1000 // // Always needs to be sync with MAX_UNWIND_TABLE_SIZE in BPF program.
 )
 
 var (
@@ -98,7 +98,7 @@ func (m *bpfMaps) readStackCount(keyBytes []byte) (uint64, error) {
 }
 
 // updateUnwindTables updates the unwind tables with the given plan table.
-func (m *bpfMaps) updateUnwindTables(pid int, pt unwind.PlanTable, mainLowPC uint64, mainHighPC uint64) error {
+func (m *bpfMaps) updateUnwindTables(pid int, pt unwind.UnwindTable, mainLowPC uint64, mainHighPC uint64) error {
 	// Ignore RIP right now, it's usually 8 bytes before the CFA.
 
 	buf := new(bytes.Buffer)
@@ -119,8 +119,8 @@ func (m *bpfMaps) updateUnwindTables(pid int, pt unwind.PlanTable, mainLowPC uin
 	}
 
 	for i, row := range pt {
-		if i >= maxPlanTableSize {
-			panic(fmt.Sprintf("max plan table size reached. Table size %d, but max size is %d", len(pt), maxPlanTableSize))
+		if i >= maxUnwindTableSize {
+			panic(fmt.Sprintf("max plan table size reached. Table size %d, but max size is %d", len(pt), maxUnwindTableSize))
 			break
 		}
 		// Ignore RIP right now, it's usually 8 bytes before the CFA.
@@ -181,7 +181,7 @@ func (m *bpfMaps) updateUnwindTables(pid int, pt unwind.PlanTable, mainLowPC uin
 	fmt.Println("=======================")
 	fmt.Fprintf(os.Stdout, "\t- Total entries %d\n\n", len(pt))
 
-	printRow := func(w io.Writer, pt unwind.PlanTable, index int) {
+	printRow := func(w io.Writer, pt unwind.UnwindTable, index int) {
 		cfaInfo := ""
 		switch pt[index].CFA.(type) {
 		case unwind.Instruction:
