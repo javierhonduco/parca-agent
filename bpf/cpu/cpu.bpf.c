@@ -178,8 +178,12 @@ u32 UNWIND_UNSUPPORTED_EXPRESSION = 3;
 // Any other error, such as failed memory reads.
 // TODO(javierhonduco): split this error into subtypes.
 u32 UNWIND_CATCHALL_ERROR = 4;
+// Errors that should never happen.
+u32 UNWIND_SHOULD_NEVER_HAPPEN_ERROR = 5;
+// PC not in table (Kernel PC?).
+u32 UNWIND_PC_NOT_COVERED_ERROR = 6;
 // Keep track of total samples.
-u32 UNWIND_SAMPLES_COUNT = 5;
+u32 UNWIND_SAMPLES_COUNT = 7;
 
 
 struct {
@@ -210,8 +214,22 @@ static void unwind_unsupported_expression() {
   }
 }
 
+static void unwind_should_never_happen_error() {
+  u32 *c = bpf_map_lookup_elem(&percpu_stats, &UNWIND_SHOULD_NEVER_HAPPEN_ERROR);
+  if (c) {
+    *c += 1;
+  }
+}
+
 static void unwind_catchall_error() {
   u32 *c = bpf_map_lookup_elem(&percpu_stats, &UNWIND_CATCHALL_ERROR);
+  if (c) {
+    *c += 1;
+  }
+}
+
+static void unwind_uncovered_error() {
+  u32 *c = bpf_map_lookup_elem(&percpu_stats, &UNWIND_PC_NOT_COVERED_ERROR);
   if (c) {
     *c += 1;
   }
@@ -238,17 +256,33 @@ static void unwind_print_stats() {
     return;
   }
 
+  
+  u32 *not_covered_count = bpf_map_lookup_elem(&percpu_stats, &UNWIND_PC_NOT_COVERED_ERROR);
+  if (not_covered_count == NULL) {
+    return;
+  }
+
   u32 *catchall_count = bpf_map_lookup_elem(&percpu_stats, &UNWIND_CATCHALL_ERROR);
   if (catchall_count == NULL) {
     return;
   }
 
-  bpf_printk("[[ stats ]]");
+
+  u32 *never = bpf_map_lookup_elem(&percpu_stats, &UNWIND_SHOULD_NEVER_HAPPEN_ERROR);
+  if (never == NULL) {
+    return;
+  }
+
+  bpf_printk("[[ stats for cpu %d ]]", (int)bpf_get_smp_processor_id());
   bpf_printk("success=%lu", *success_counter);
   bpf_printk("unsup_expression=%lu", *unsup_expression);
   bpf_printk("truncated_counter=%lu", *truncated_counter);
   bpf_printk("catchall_count=%lu", *catchall_count);
+  bpf_printk("never=%lu", *never);
+
   bpf_printk("total_counter=%lu", *total_counter);
+  bpf_printk("(not_covered_count=%lu)", *not_covered_count);
+
 }
 
 static void bump_samples() {
@@ -301,6 +335,7 @@ static int find_offset_for_pc(__u32 index, void *data)
   // Appease the verifier.
   if (mid < 0 || mid >= MAX_UNWIND_TABLE_SIZE) {
     bpf_printk("\t.should never happen");
+    unwind_should_never_happen_error();
     return 1;
   }
 
@@ -340,6 +375,7 @@ static __always_inline int walk_user_stacktrace(bpf_user_pt_regs_t *regs,
   // Invariant check.
   if (table_len >= MAX_UNWIND_TABLE_SIZE) {
     bpf_printk("should never happen");
+    unwind_should_never_happen_error();
     return 0;
   }
 
@@ -382,12 +418,14 @@ static __always_inline int walk_user_stacktrace(bpf_user_pt_regs_t *regs,
 
     // TODO(javierhonduco): add proper not found checks
     if (table_idx == -1) {
+      unwind_should_never_happen_error();
       return 0;
     }
 
     // Appease the verifier.
     if (table_idx < 0 || table_idx >= MAX_UNWIND_TABLE_SIZE) {      
       bpf_printk("\t[error] this should never happen");
+      unwind_should_never_happen_error();
       return 0;
     }
 
@@ -502,11 +540,13 @@ int profile_cpu(struct bpf_perf_event_data *ctx) {
     // Appease the verifier.
     if (last_idx < 0 || last_idx >= MAX_UNWIND_TABLE_SIZE) {
       bpf_printk("\t[error] this should never happen");
+      unwind_should_never_happen_error();
       return 0;
     }
 
     if(ctx->regs.ip < unwind_table->rows[0].pc || ctx->regs.ip  > unwind_table->rows[last_idx].pc) {
       bpf_printk("IP not covered. In kernel space / bug? IP %llx", ctx->regs.ip);
+      unwind_uncovered_error();
       return 0;
     }
 
