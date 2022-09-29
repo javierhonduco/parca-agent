@@ -287,63 +287,43 @@ static void bump_samples() {
   }
 }
 
-// Context for the binary search. We mutate it on every step and at the end
-// we read the resulting values.
-struct callback_ctx {
-  u64 pc; // the needle.
-  stack_unwind_table_t *table; // the haystack.
-  u32 found;
-  u32 left; // current left index.
-  u32 right; // current right index.
-};
-
-// This function does 1 iteration of the binary search.
-// It's called via `bpf_loop` as the BPF verifier is unable
-// to verify a single function that does all the steps.
-//
-// (See comment around the call-site.)
-//
-// Experimentally, I have seen that ~7 iterations could
-// be completed with the approach I previously tried, but
-// unfortunately, that's just ~128 (2^7) entries, which 
-// won't be enough for most tables.
-//
-// In my tests a very small binary already has 60k entries,
-// so it requires ~log2(60k) ~= 16 iterations to find an entry
-// in this case.
-static int find_offset_for_pc(__u32 index, void *data)
+static u64 find_offset_for_pc(stack_unwind_table_t *table, u64 pc)
 {
-  struct callback_ctx *ctx = data;
 
-  // TODO(javierhonduco): ensure that this condition is right as we use
-  // unsigned values...
-  if (ctx->left >= ctx->right) {
-    bpf_printk("\t.done");
-    return 1;
+  u64 left = 0;
+  u64 right = table->table_len;
+  u64 found = 0xFABADA;
+
+  for(int i=0; i<MAX_BINARY_SEARCH_DEPTH; i++) {
+    // TODO(javierhonduco): ensure that this condition is right as we use
+    // unsigned values...
+    if (left >= right) {
+      bpf_printk("\t.done");
+      return found;
+    }
+
+    u32 mid = (left + right) / 2;
+
+    // Appease the verifier.
+    if (mid < 0 || mid >= MAX_UNWIND_TABLE_SIZE) {
+      bpf_printk("\t.should never happen");
+      unwind_should_never_happen_error();
+      return 0xDEADBEEF;
+    }
+
+    // Debug logs.
+    // bpf_printk("\t-> fetched PC %llx, target PC %llx (iteration %d/%d, mid: %d, left:%d, right:%d)", ctx->table->rows[mid].pc, ctx->pc, index, MAX_BINARY_SEARCH_DEPTH, mid, ctx->left, ctx->right);
+    if (table->rows[mid].pc <= pc) {
+      found = mid;
+      left = mid + 1;
+    } else {
+      right = mid;
+    }
+
+    // Debug logs.
+    // bpf_printk("\t<- fetched PC %llx, target PC %llx (iteration %d/%d, mid: --, left:%d, right:%d)", ctx->table->rows[mid].pc, ctx->pc, index, MAX_BINARY_SEARCH_DEPTH, ctx->left, ctx->right);
   }
-
-  u32 mid = (ctx->left + ctx->right) / 2;
-
-  // Appease the verifier.
-  if (mid < 0 || mid >= MAX_UNWIND_TABLE_SIZE) {
-    bpf_printk("\t.should never happen");
-    unwind_should_never_happen_error();
-    return 1;
-  }
-
-  // Debug logs.
-  // bpf_printk("\t-> fetched PC %llx, target PC %llx (iteration %d/%d, mid: %d, left:%d, right:%d)", ctx->table->rows[mid].pc, ctx->pc, index, MAX_BINARY_SEARCH_DEPTH, mid, ctx->left, ctx->right);
-  if (ctx->table->rows[mid].pc <= ctx->pc) {
-    ctx->found = mid;
-    ctx->left = mid + 1;
-  } else {
-    ctx->right = mid;
-  } 
-  
-  // Debug logs.
-  // bpf_printk("\t<- fetched PC %llx, target PC %llx (iteration %d/%d, mid: --, left:%d, right:%d)", ctx->table->rows[mid].pc, ctx->pc, index, MAX_BINARY_SEARCH_DEPTH, ctx->left, ctx->right);
-
-	return 0;
+	return 0xBADFAD;
 }
 
 static __always_inline int walk_user_stacktrace(bpf_user_pt_regs_t *regs,
@@ -383,24 +363,15 @@ static __always_inline int walk_user_stacktrace(bpf_user_pt_regs_t *regs,
     // Add address to stack.
     stack->addresses[i] = current_rip;
 
-    struct callback_ctx callback_context = {
-      .pc = current_rip,
-      .table = unwind_table,
-      .found = 0,
-      .left = 0,
-      .right = table_len - 1, 
-    };
-
-    // TODO(javierhonduco): use the return value.
-    // Note that we are using bpf_loop whilst prototyping. We might change the approach later on
-    // to support older kernels, but so far it's very convenient (not having to deal with global
-    // state, such as what rbperf has to do. Avoiding having to do this is good when prototyping)
-    bpf_loop(MAX_BINARY_SEARCH_DEPTH, find_offset_for_pc, &callback_context, 0);
-
-    u64 table_idx = callback_context.found;
+    u64 table_idx = find_offset_for_pc(unwind_table, current_rip);
     bpf_printk("\t=> table_index: %d", table_idx);
 
     // TODO(javierhonduco): add proper not found checks
+    if (table_idx == 0xBADFAD || table_idx == 0xDEADBEEF || table_idx == 0xFABADA) {
+      bpf_printk("[error] binary search failed with %llx", table_idx);
+      return 0;
+    }
+
     if (table_idx == -1) {
       unwind_should_never_happen_error();
       return 1;
