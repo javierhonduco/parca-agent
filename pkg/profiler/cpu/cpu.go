@@ -93,7 +93,7 @@ type CPU struct {
 	lastProfileStartedAt           time.Time
 
 	// TODO(javierhonduco): remove
-	ehFramePid int
+	ehFramePids []int
 }
 
 func NewCPUProfiler(
@@ -106,7 +106,7 @@ func NewCPUProfiler(
 	debugInfoProcessor profiler.DebugInfoManager,
 	metadataProviders []profiler.MetadataProvider,
 	profilingDuration time.Duration,
-	ehFramePid int,
+	ehFramePids []int,
 ) *CPU {
 	return &CPU{
 		logger: logger,
@@ -127,10 +127,10 @@ func NewCPUProfiler(
 
 		profilingDuration: profilingDuration,
 
-		mtx:        &sync.RWMutex{},
-		byteOrder:  byteorder.GetHostByteOrder(),
-		metrics:    newMetrics(reg),
-		ehFramePid: ehFramePid,
+		mtx:         &sync.RWMutex{},
+		byteOrder:   byteorder.GetHostByteOrder(),
+		metrics:     newMetrics(reg),
+		ehFramePids: ehFramePids,
 	}
 }
 
@@ -283,11 +283,14 @@ func (p *CPU) Run(ctx context.Context) error {
 
 	ticker := time.NewTicker(p.profilingDuration)
 	defer ticker.Stop()
-	// Update tables
-	pid := p.ehFramePid
-	if err := p.ensureUnwindTables(int(pid)); err != nil {
-		level.Error(p.logger).Log("msg", "failed to check or update unwind tables", "pid", pid, "err", err)
-		panic("fatal err")
+	// Update unwind tables.
+	pids := p.ehFramePids
+	for _, pid := range pids {
+		fmt.Println("Adding unwind tables for pid", pid)
+		if err := p.ensureUnwindTables(int(pid)); err != nil {
+			level.Error(p.logger).Log("msg", "failed to check or update unwind tables", "pid", pid, "err", err)
+			panic("fatal err")
+		}
 	}
 
 	level.Debug(p.logger).Log("msg", "start profiling loop")

@@ -108,11 +108,12 @@ func (m *bpfMaps) updateUnwindTables(pid int, pt unwind.UnwindTable) error {
 		return fmt.Errorf("write PC bytes: %w", err)
 	}
 
-	for i, row := range pt {
-		if i >= maxUnwindTableSize {
-			panic(fmt.Sprintf("max plan table size reached. Table size %d, but max size is %d", len(pt), maxUnwindTableSize))
-			break
-		}
+	if len(pt) >= maxUnwindTableSize {
+		panic(fmt.Sprintf("max plan table size reached. Table size %d, but max size is %d", len(pt), maxUnwindTableSize))
+	}
+
+	for _, row := range pt {
+
 		// Ignore RIP right now, it's always 8 bytes before the CFA.
 		/* 		ip, err := row.RA.Bytes(m.byteOrder)
 		   		if err != nil {
