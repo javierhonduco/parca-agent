@@ -69,7 +69,8 @@ func ProcessMaps(pid int) (map[string]*procfs.ProcMap, string, error) {
 	}
 
 	filesSeen := make(map[string]*procfs.ProcMap)
-	// HACK...
+	// HACK(javierhonduco): We rely on the first mapped entry to be the
+	// executable.
 	mainExec := ""
 
 	for _, map_ := range maps {
@@ -110,15 +111,17 @@ func (ptb *UnwindTableBuilder) UnwindTableForPid(pid int) (UnwindTable, error) {
 			continue
 		}
 
-		// TODO(javierhonduco): Improve this.
-		// Seems like our main executable start address is already correct, but not the dynamic
-		// libraries, so let's skip our main executable.
+		rows := buildTable(fdes, 0)
+
 		if strings.Contains(executablePath, mainExec) {
-			fmt.Println("! Start set to zero for the main binary", mainExec)
-			rows := buildTable(fdes, 0)
+			fmt.Println("! Dealing with main binary", mainExec)
 			res = append(res, rows...)
 		} else {
-			rows := buildTable(fdes, uint64(m.StartAddr))
+			fmt.Println("! Dealing with library", m.Pathname)
+
+			for i := range rows {
+				rows[i].Loc += uint64(m.StartAddr)
+			}
 			res = append(res, rows...)
 		}
 	}
