@@ -347,12 +347,11 @@ static int find_offset_for_pc(__u32 index, void *data)
 }
 
 static __always_inline int walk_user_stacktrace(bpf_user_pt_regs_t *regs,
-                                     stack_unwind_table_t *unwind_table) {
+                                     stack_unwind_table_t *unwind_table,
+                                     stack_trace_t *stack) {
   u64 current_rip = regs->ip;
   u64 current_rsp = regs->sp;
   u64 current_rbp = regs->bp;
-
-  stack_trace_t stack = {.addresses = {}};
 
   bpf_printk("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
   bpf_printk("traversing stack using .eh_frame information!!");
@@ -367,7 +366,7 @@ static __always_inline int walk_user_stacktrace(bpf_user_pt_regs_t *regs,
   if (table_len >= MAX_UNWIND_TABLE_SIZE) {
     bpf_printk("should never happen");
     unwind_should_never_happen_error();
-    return 0;
+    return 1;
   }
 
   bump_samples();
@@ -382,7 +381,7 @@ static __always_inline int walk_user_stacktrace(bpf_user_pt_regs_t *regs,
     
 
     // Add address to stack.
-    stack.addresses[i] = current_rip;
+    stack->addresses[i] = current_rip;
 
     struct callback_ctx callback_context = {
       .pc = current_rip,
@@ -404,14 +403,14 @@ static __always_inline int walk_user_stacktrace(bpf_user_pt_regs_t *regs,
     // TODO(javierhonduco): add proper not found checks
     if (table_idx == -1) {
       unwind_should_never_happen_error();
-      return 0;
+      return 1;
     }
 
     // Appease the verifier.
     if (table_idx < 0 || table_idx >= MAX_UNWIND_TABLE_SIZE) {      
       bpf_printk("\t[error] this should never happen");
       unwind_should_never_happen_error();
-      return 0;
+      return 1;
     }
 
     u64 found_pc = unwind_table->rows[table_idx].pc;
@@ -426,7 +425,7 @@ static __always_inline int walk_user_stacktrace(bpf_user_pt_regs_t *regs,
     if (found_cfa_reg == 0xBEEF && found_cfa_offset == 0xBADFAD) {
       bpf_printk("\t!!!! CFA is an expression, bailing out");
       unwind_unsupported_expression();
-      return 0;
+      return 1;
     }
 
     u64 previous_rsp = 0;
@@ -437,7 +436,7 @@ static __always_inline int walk_user_stacktrace(bpf_user_pt_regs_t *regs,
     } else {
       bpf_printk("\t[error] register %d not valid (expected $rbp or $rsp)", found_cfa_reg);
       unwind_catchall_error();
-      return 0;
+      return 1;
     }
     // TODO(javierhonduco): A possible check could be to see whether this value is within
     // the stack. This check could be quite brittle though, so if we add it, it would be
@@ -445,7 +444,7 @@ static __always_inline int walk_user_stacktrace(bpf_user_pt_regs_t *regs,
     if (previous_rsp == 0) {
       bpf_printk("[error] previous_rsp should not be zero.");
       unwind_catchall_error();
-      return 0;
+      return 1;
     }
 
     // HACK(javierhonduco): We assume that the return address is *always* 8 bytes ahead of the previous stack
@@ -457,7 +456,7 @@ static __always_inline int walk_user_stacktrace(bpf_user_pt_regs_t *regs,
     if (previous_rip == 0) {
       bpf_printk("[error] previous_rip should not be zero. This can mean that the read failed.");
       unwind_catchall_error();
-      return 0;
+      return 1;
     }
 
     // Set rbp register.
@@ -512,7 +511,7 @@ static __always_inline int walk_user_stacktrace(bpf_user_pt_regs_t *regs,
   // We only reach here if the stack wasn't completely unwound.
   unwind_truncated();
 
-  return 0;
+  return 1;
 }
 
 // Print an unwinding table row for debugging.
@@ -552,7 +551,15 @@ int profile_cpu(struct bpf_perf_event_data *ctx) {
       return 0;
     }
 
-    walk_user_stacktrace(&ctx->regs, unwind_table);
+
+    stack_trace_t stack = {.addresses = {}};
+    int ret = walk_user_stacktrace(&ctx->regs, unwind_table, &stack);
+    if (ret == 0) {
+      // Send stack to userspace / aggregate it here.
+      bpf_printk("yesssss :)");
+    } else {
+      bpf_printk("noooooo :(");
+    }
 
     // javierhonduco: Debug output to ensure that the maps are correctly populated by comparing it with the data
     // we are writing. Remove later on.
