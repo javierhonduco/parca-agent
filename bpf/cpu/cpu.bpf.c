@@ -96,16 +96,8 @@ typedef struct stack_unwind_row {
   s64 rbp_offset;
 } stack_unwind_row_t;
 
-// Keeps the lowest program counter and the highest one
-// for `main` to detect if we are done walking the stack.
-typedef struct process_configuration_t {
-  u64 main_low_pc;
-  u64 main_high_pc;
-} process_configuration_t;
-
 // Unwinding table representation.
 typedef struct stack_unwind_table_t { 
-  process_configuration_t process_config;
   u64 table_len; // size of the table, as the max size is static.
   stack_unwind_row_t rows[MAX_UNWIND_TABLE_SIZE]; 
 } stack_unwind_table_t;
@@ -355,7 +347,7 @@ static int find_offset_for_pc(__u32 index, void *data)
 }
 
 static __always_inline int walk_user_stacktrace(bpf_user_pt_regs_t *regs,
-                                     stack_unwind_table_t *unwind_table, process_configuration_t *process_config) {
+                                     stack_unwind_table_t *unwind_table) {
   u64 current_rip = regs->ip;
   u64 current_rsp = regs->sp;
   u64 current_rbp = regs->bp;
@@ -370,7 +362,6 @@ static __always_inline int walk_user_stacktrace(bpf_user_pt_regs_t *regs,
   // Just for debugging to ensure that the data we are reading
   // matches what we wrote.
   bpf_printk("- unwind table has %d items", table_len);
-  bpf_printk("- main pc range %llx...%llx", process_config->main_low_pc, process_config->main_high_pc);
 
   // Invariant check.
   if (table_len >= MAX_UNWIND_TABLE_SIZE) {
@@ -392,12 +383,6 @@ static __always_inline int walk_user_stacktrace(bpf_user_pt_regs_t *regs,
 
     // Add address to stack.
     stack.addresses[i] = current_rip;
-
-    if (process_config->main_low_pc <= current_rip && current_rip <= process_config->main_high_pc) {
-      bpf_printk("======= reached main! =======");
-      unwind_success();
-      return 0;
-    }
 
     struct callback_ctx callback_context = {
       .pc = current_rip,
@@ -483,14 +468,31 @@ static __always_inline int walk_user_stacktrace(bpf_user_pt_regs_t *regs,
     // For example, we might want to indicate offset 0 and read that address?
     if (found_rbp_offset == 0) {
       previous_rbp = current_rbp;
+      if (previous_rbp == 0) {
+        // probs not right!
+        bpf_printk("????? reached main! ??????");
+        return 0;
+      }
     } else {
       u64 previous_rbp_addr = previous_rsp + found_rbp_offset;
       bpf_printk("\t(bp_offset: %d, bp value stored at %llx)", found_rbp_offset, previous_rbp_addr);
-      bpf_probe_read_user(&previous_rbp, 8, (void *)(previous_rbp_addr)); // 8 bytes, a whole word in a 64 bits machine
+      int ret = bpf_probe_read_user(&previous_rbp, 8, (void *)(previous_rbp_addr)); // 8 bytes, a whole word in a 64 bits machine
 
       if (previous_rbp == 0) {
-        bpf_printk("[error] previous_rbp should not be zero. This can mean that the read failed.");
-        unwind_catchall_error();
+        if (ret == 0) {
+          // From 3.4.1 Initial Stack and Register State
+          //
+          // > %rbp The content of this register is unspecified at process initialization time,
+          // > but the user code should mark the deepest stack frame by setting the frame
+          // > pointer to zero.
+          //
+          // https://refspecs.linuxbase.org/elf/x86_64-abi-0.99.pdf
+          bpf_printk("======= reached main! =======");
+          unwind_success();
+        } else {
+          bpf_printk("[error] previous_rbp should not be zero. This can mean that the read has failed %d.", ret);
+          unwind_catchall_error();
+        }
         return 0;
       }
     }
@@ -550,7 +552,7 @@ int profile_cpu(struct bpf_perf_event_data *ctx) {
       return 0;
     }
 
-    walk_user_stacktrace(&ctx->regs, unwind_table, &unwind_table->process_config);
+    walk_user_stacktrace(&ctx->regs, unwind_table);
 
     // javierhonduco: Debug output to ensure that the maps are correctly populated by comparing it with the data
     // we are writing. Remove later on.

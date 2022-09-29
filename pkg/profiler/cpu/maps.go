@@ -98,20 +98,10 @@ func (m *bpfMaps) readStackCount(keyBytes []byte) (uint64, error) {
 }
 
 // updateUnwindTables updates the unwind tables with the given plan table.
-func (m *bpfMaps) updateUnwindTables(pid int, pt unwind.UnwindTable, mainLowPC uint64, mainHighPC uint64) error {
-	// Ignore RIP right now, it's usually 8 bytes before the CFA.
+func (m *bpfMaps) updateUnwindTables(pid int, pt unwind.UnwindTable) error {
+	// Ignore RIP right now, it's always 8 bytes before the CFA.
 
 	buf := new(bytes.Buffer)
-
-	// Write `main_low_pc`.
-	if err := binary.Write(buf, m.byteOrder, mainLowPC); err != nil {
-		return fmt.Errorf("write mainLowPC bytes: %w", err)
-	}
-
-	// Write `main_high_pc`.
-	if err := binary.Write(buf, m.byteOrder, mainHighPC); err != nil {
-		return fmt.Errorf("write mainHighPC bytes: %w", err)
-	}
 
 	// Write number of rows `.table_len``.
 	if err := binary.Write(buf, m.byteOrder, uint64(len(pt))); err != nil {
@@ -123,7 +113,7 @@ func (m *bpfMaps) updateUnwindTables(pid int, pt unwind.UnwindTable, mainLowPC u
 			panic(fmt.Sprintf("max plan table size reached. Table size %d, but max size is %d", len(pt), maxUnwindTableSize))
 			break
 		}
-		// Ignore RIP right now, it's usually 8 bytes before the CFA.
+		// Ignore RIP right now, it's always 8 bytes before the CFA.
 		/* 		ip, err := row.RA.Bytes(m.byteOrder)
 		   		if err != nil {
 		   			return fmt.Errorf("get RIP bytes: %w", err)

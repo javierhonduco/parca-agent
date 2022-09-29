@@ -19,7 +19,6 @@ import "C" //nolint:all
 import (
 	"bytes"
 	"context"
-	"debug/elf"
 	_ "embed"
 	"encoding/binary"
 	"errors"
@@ -383,50 +382,7 @@ func (p *CPU) ensureUnwindTables(pid int) error {
 		return fmt.Errorf("failed to build unwind table: %w", err)
 	}
 
-	mainLowPC, mainHighPC := uint64(0), uint64(0)
-
-	// TODO(javierhonduco): This could placed in a better spot
-	// + cached.
-	//
-	// Q: can it happen that the requested .text start address
-	// while calling mmap(2) starts at a different offset?
-	e, err := elf.Open(fmt.Sprintf("/proc/%d/exe", pid))
-	if err != nil {
-		return fmt.Errorf("failed to open elf: %w", err)
-	}
-
-	syms, symsErr := e.Symbols()
-	dynSyms, dynSymsErr := e.DynamicSymbols()
-
-	if symsErr != nil && dynSymsErr != nil {
-		return fmt.Errorf("failed to read symbols: %w", err)
-
-	}
-	syms = append(syms, dynSyms...)
-	fmt.Println("symbol count", len(syms))
-
-	for _, sym := range syms {
-		if sym.Name == "main" {
-			// TODO ensure these are not zeroes
-			fmt.Printf("main start @ %x\n", sym.Value)
-			fmt.Printf("main end ~ @ %x\n", sym.Value+sym.Size)
-
-			mainLowPC = sym.Value
-			mainHighPC = sym.Value + sym.Size + 10 // HACK(javierhonduco): last instruction is not accounted for?
-			break
-		}
-
-		// not relocated...
-		// sym.Name == "_start"
-
-		// or
-		// __libc_start_call_main:
-	}
-
-	if mainLowPC == 0 || mainHighPC == 0 {
-		panic("could not find low and high PC for symbol 'main'")
-	}
-	if err := p.bpfMaps.updateUnwindTables(pid, pt, mainLowPC, mainHighPC); err != nil {
+	if err := p.bpfMaps.updateUnwindTables(pid, pt); err != nil {
 		return fmt.Errorf("failed to update unwind table: %w", err)
 	}
 	return nil
