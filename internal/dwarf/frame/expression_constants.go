@@ -1,16 +1,41 @@
 // nolint:stylecheck
 package frame
 
+// Dwarf expression constats that we recognise.
+var Plt1 = [...]byte{
+	DW_OP_breg16,
+	DW_OP_lit15,
+	DW_OP_and,
+	DW_OP_lit11,
+	DW_OP_ge,
+	DW_OP_lit3,
+	DW_OP_shl,
+	DW_OP_plus,
+}
+
+var Plt2 = [...]byte{
+	DW_OP_breg16,
+	DW_OP_lit15,
+	DW_OP_and,
+	DW_OP_lit10,
+	DW_OP_ge,
+	DW_OP_lit3,
+	DW_OP_shl,
+	DW_OP_plus,
+}
+
 // Operation opcodes.
 const (
 	DW_OP_addr    = 0x03
+	DW_OP_deref   = 0x06
+	DW_OP_const1u = 0x08
 	DW_OP_const1s = 0x09
 )
 
 const (
-	DW_OP_const2u = 0x0a
-	DW_OP_const2s = 0x0b
-	DW_OP_const4u = iota
+	DW_OP_const2u = iota + 0x0a
+	DW_OP_const2s
+	DW_OP_const4u
 	DW_OP_const4s
 	DW_OP_const8u
 	DW_OP_const8s
@@ -38,7 +63,6 @@ const (
 	DW_OP_shr
 	DW_OP_shra
 	DW_OP_xor
-	DW_OP_skip
 	DW_OP_bra
 	DW_OP_eq
 	DW_OP_ge
@@ -46,12 +70,13 @@ const (
 	DW_OP_le
 	DW_OP_lt
 	DW_OP_ne
+	DW_OP_skip
 )
 
 const (
-	DW_OP_lit0 = 0x30
-	DW_OP_lit1 = 0x31
-	DW_OP_lit2 = iota
+	DW_OP_lit0 = iota + 0x30
+	DW_OP_lit1
+	DW_OP_lit2
 	DW_OP_lit3
 	DW_OP_lit4
 	DW_OP_lit5
@@ -159,7 +184,6 @@ const (
 	DW_OP_form_tls_address
 	DW_OP_call_frame_cfa
 	DW_OP_bit_piece
-
 	DW_OP_lo_user = 0xe0
 	DW_OP_hi_user = 0xff
 )
