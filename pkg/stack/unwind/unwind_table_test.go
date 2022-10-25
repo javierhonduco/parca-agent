@@ -30,7 +30,7 @@ func TestBuildUnwindTable(t *testing.T) {
 	fdes, err := ptb.readFDEs("../../../testdata/out/basic-cpp", 0)
 	require.NoError(t, err)
 
-	unwindTable := buildTable(fdes)
+	unwindTable := buildUnwindTable(fdes)
 	require.Equal(t, 38, len(unwindTable))
 
 	require.Equal(t, uint64(0x401020), unwindTable[0].Loc)
