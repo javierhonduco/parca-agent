@@ -4,7 +4,7 @@ Tracking this feature in https://github.com/parca-dev/parca-agent/issues/768.
 
 ### Design
 
-The DWARF unwind unformation is read from the `.eh_frame` section (tracking other sections in https://github.com/parca-dev/parca-agent/issues/617), parsed, and evaluated to generate unwind tables (see `table.go`, among others). The unwind tables have, for every program counter in an executable, instructions on how to find the stack pointer value before calling the function of the current frame, as well as information on where to find the return address for the current function, as well as how to calculate the value of various registers in the previous frame.
+The DWARF unwind unformation is read from the `.eh_frame` section (tracking other sections in https://github.com/parca-dev/parca-agent/issues/617), parsed, and evaluated to generate unwind tables (see `table.go`, among others). The unwind tables have, for every program counter(*) in an executable, instructions on how to find the stack pointer value before calling the function of the current frame, as well as information on where to find the return address for the current function, as well as how to calculate the value of various registers in the previous frame.
 
 Once we have these tables in memory, we sort them by program counter, and load them in a BPF map.
 
@@ -56,7 +56,7 @@ On the Agent:
 
 GDB is very useful to verify that stack unwinding worked fine. We are mostly interested in checking:
 - the frame's registers
-- where are the return addresses stored and their values
+- where are the saved return addresses stored and their values
 
 Let's take `./internal/dwarf/frame/testdata/parca-demo-cpp-no-fp`'s output and make sure that the stack is correct:
 
@@ -168,7 +168,7 @@ Stack frame at 0x7ffcaee95f10:
  Locals at 0x7ffcaee95f00, Previous frame's sp is 0x7ffcaee95f10
  Saved registers:
   rip at 0x7ffcaee95f08
-# We mostly want to see that the addresse where the return address (rip) is is correct. As we can see in the last
+# We mostly want to see that the addresse where the saved return address (previous frame's rip) is is correct. As we can see in the last
 # line, it matches what we expect (0x7ffcaee95f08).
 # The first line shows rip's value (0x401206), that also matches what we expect. This address is the program counter
 # that the processor should execute once the current function exits. It's pushed into the stack with a `call` instruciton.
@@ -246,3 +246,6 @@ Another thing to bear in mind when setting breakpoints is that there could be mo
 ## Notes
 
 - [1]: This is of course not very efficient. Once the implementation is more mature, we will use the smallest data types we can, but we need to be careful and ensure that the C ABI is correct while loading data in the BPF maps.
+
+
+(*): This is not always the case, but an overlwhelming majority of the times it is

@@ -120,7 +120,8 @@ func (ptb *UnwindTableBuilder) UnwindTableForPid(pid int) (UnwindTable, error) {
 		executablePath := path.Join(fmt.Sprintf("/proc/%d/root", pid), m.Pathname)
 
 		level.Info(ptb.logger).Log("msg", "finding tables for mapped executable", "path", executablePath, "starting address", fmt.Sprintf("%x", m.StartAddr))
-		fdes, err := ptb.readFDEs(executablePath, 0)
+		fdes, err := ptb.readFDEs(executablePath)
+		// TODO(javierhonduco): Add markers in between executable sections.
 		if err != nil {
 			level.Error(ptb.logger).Log("msg", "failed to read frame description entries", "obj", executablePath, "err", err)
 			continue
@@ -163,7 +164,7 @@ func x64RegisterToString(reg uint64) string {
 
 // PrintTable is a debugging helper that prints the unwinding table to the given io.Writer.
 func (ptb *UnwindTableBuilder) PrintTable(writer io.Writer, path string) error {
-	fdes, err := ptb.readFDEs(path, 0)
+	fdes, err := ptb.readFDEs(path)
 	if err != nil {
 		return err
 	}
@@ -207,7 +208,7 @@ func (ptb *UnwindTableBuilder) PrintTable(writer io.Writer, path string) error {
 	return nil
 }
 
-func (ptb *UnwindTableBuilder) readFDEs(path string, start uint64) (frame.FrameDescriptionEntries, error) {
+func (ptb *UnwindTableBuilder) readFDEs(path string) (frame.FrameDescriptionEntries, error) {
 	obj, err := elf.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open elf: %w", err)
@@ -227,7 +228,7 @@ func (ptb *UnwindTableBuilder) readFDEs(path string, start uint64) (frame.FrameD
 	}
 
 	// TODO(kakkoyun): Byte order of a DWARF section can be different.
-	fdes, err := frame.Parse(ehFrame, obj.ByteOrder, start, pointerSize(obj.Machine), sec.Addr)
+	fdes, err := frame.Parse(ehFrame, obj.ByteOrder, 0, pointerSize(obj.Machine), sec.Addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse frame data: %w", err)
 	}
@@ -254,7 +255,7 @@ type UnwindTableRow struct {
 	CFA frame.DWRule
 	// The value of the RBP register.
 	RBP frame.DWRule
-	// The value of the return address register. This is not needed in x86_64 as it's part of the ABI but is necessary
+	// The value of the saved return address. This is not needed in x86_64 as it's part of the ABI but is necessary
 	// in arm64.
 	RA frame.DWRule
 }
@@ -272,13 +273,13 @@ func buildTableRows(fde *frame.FrameDescriptionEntry) []UnwindTableRow {
 			CFA: instructionContext.CFA,
 		}
 
-		// Deal with return address register.
+		// Deal with saved return address.
 		rule, found := instructionContext.Regs[instructionContext.RetAddrReg]
 		if found {
 			row.RA = rule
 		} else {
-			// The return address must be specified.
-			panic("no return address found")
+			// The saved return address must be specified.
+			panic("no saved return address found")
 		}
 
 		// Deal with $rbp.

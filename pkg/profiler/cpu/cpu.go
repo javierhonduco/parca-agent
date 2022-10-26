@@ -247,7 +247,7 @@ func (p *CPU) Run(ctx context.Context) error {
 	p.lastProfileStartedAt = time.Now()
 	p.mtx.Unlock()
 
-	counts, err := m.GetMap(countsMapName)
+	stackCounts, err := m.GetMap(stackCountsMapName)
 	if err != nil {
 		return fmt.Errorf("get counts map: %w", err)
 	}
@@ -263,7 +263,7 @@ func (p *CPU) Run(ctx context.Context) error {
 
 	p.bpfMaps = &bpfMaps{
 		byteOrder:    p.byteOrder,
-		counts:       counts,
+		stackCounts:  stackCounts,
 		stackTraces:  stackTraces,
 		unwindTables: unwindTables,
 	}
@@ -405,7 +405,7 @@ func (p *CPU) obtainProfiles(ctx context.Context) ([]*profiler.Profile, error) {
 		locationIndices = map[profiler.PID]map[uint64]int{}
 	)
 
-	it := p.bpfMaps.counts.Iterator()
+	it := p.bpfMaps.stackCounts.Iterator()
 	for it.Next() {
 		select {
 		case <-ctx.Done():

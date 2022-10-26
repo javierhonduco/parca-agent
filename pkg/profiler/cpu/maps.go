@@ -30,7 +30,7 @@ import (
 )
 
 const (
-	countsMapName      = "counts"
+	stackCountsMapName = "stack_counts"
 	stackTracesMapName = "stack_traces"
 	unwindTableMapName = "unwind_tables"
 	maxUnwindTableSize = 130 * 1000 // // Always needs to be sync with MAX_UNWIND_TABLE_SIZE in BPF program.
@@ -45,7 +45,7 @@ var (
 type bpfMaps struct {
 	byteOrder binary.ByteOrder
 
-	counts       *bpf.BPFMap
+	stackCounts  *bpf.BPFMap
 	stackTraces  *bpf.BPFMap
 	unwindTables *bpf.BPFMap
 }
@@ -88,7 +88,7 @@ func (m *bpfMaps) readKernelStack(kernelStackID int32, stack *combinedStack) err
 
 // readStackCount reads the value of the given key from the counts ebpf map.
 func (m *bpfMaps) readStackCount(keyBytes []byte) (uint64, error) {
-	valueBytes, err := m.counts.GetValue(unsafe.Pointer(&keyBytes[0]))
+	valueBytes, err := m.stackCounts.GetValue(unsafe.Pointer(&keyBytes[0]))
 	if err != nil {
 		return 0, fmt.Errorf("get count value: %w", err)
 	}
@@ -121,11 +121,11 @@ func (m *bpfMaps) clean() error {
 		}
 	}
 
-	it = m.counts.Iterator()
+	it = m.stackCounts.Iterator()
 	prev = nil
 	for it.Next() {
 		if prev != nil {
-			err := m.counts.DeleteKey(unsafe.Pointer(&prev[0]))
+			err := m.stackCounts.DeleteKey(unsafe.Pointer(&prev[0]))
 			if err != nil {
 				return fmt.Errorf("failed to delete count: %w", err)
 			}
@@ -136,7 +136,7 @@ func (m *bpfMaps) clean() error {
 		copy(prev, key)
 	}
 	if prev != nil {
-		err := m.counts.DeleteKey(unsafe.Pointer(&prev[0]))
+		err := m.stackCounts.DeleteKey(unsafe.Pointer(&prev[0]))
 		if err != nil {
 			return fmt.Errorf("failed to delete count: %w", err)
 		}

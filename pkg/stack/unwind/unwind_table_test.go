@@ -25,9 +25,9 @@ import (
 
 func TestBuildUnwindTable(t *testing.T) {
 	logger := log.NewNopLogger()
-	ptb := NewUnwindTableBuilder(logger)
+	utb := NewUnwindTableBuilder(logger)
 
-	fdes, err := ptb.readFDEs("../../../testdata/out/basic-cpp", 0)
+	fdes, err := utb.readFDEs("../../../testdata/out/basic-cpp")
 	require.NoError(t, err)
 
 	unwindTable := buildUnwindTable(fdes)
@@ -46,12 +46,12 @@ func BenchmarkParsingLibcDwarfUnwindInformation(b *testing.B) {
 	b.ReportAllocs()
 
 	logger := log.NewNopLogger()
-	ptb := NewUnwindTableBuilder(logger)
+	utb := NewUnwindTableBuilder(logger)
 
 	var rbpOffset int64
 
 	for n := 0; n < b.N; n++ {
-		fdes, err := ptb.readFDEs("../../../testdata/vendored/libc.so.6", 0)
+		fdes, err := utb.readFDEs("../../../testdata/vendored/libc.so.6")
 		if err != nil {
 			panic("could not read FDEs")
 		}
