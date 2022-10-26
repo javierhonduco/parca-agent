@@ -25,7 +25,7 @@
 
 #define MAX_STACK_ADDRESSES 1024 // Num of unique stack traces.
 #define MAX_ENTRIES                                                            \
-  10240 // Num entries for the `counts` map. Unused atm. TODO(javierhonduco):
+  10240 // Num entries for the `stack_counts` map. Unused atm. TODO(javierhonduco):
         // use this later on.
 #define UNWIND_TABLES_MAX_STACK_DEPTH                                          \
   100 // Max depth of each stack trace to track. TODO(javierhonduco): just to
@@ -138,7 +138,7 @@ u32 UNWIND_PC_NOT_COVERED_ERROR = 6;
 u32 UNWIND_SAMPLES_COUNT = 7;
 /*================================ MAPS =====================================*/
 
-BPF_HASH(counts, stack_count_key_t, u64, MAX_ENTRIES);
+BPF_HASH(stack_counts, stack_count_key_t, u64, MAX_ENTRIES);
 
 BPF_STACK_TRACE(stack_traces, MAX_STACK_ADDRESSES);
 BPF_HASH(unwind_tables, pid_t, stack_unwind_table_t, MAX_PID_MAP_SIZE);
@@ -247,12 +247,12 @@ static void unwind_print_stats() {
   bpf_printk("[[ stats for cpu %d ]]", (int)bpf_get_smp_processor_id());
   bpf_printk("success=%lu", *success_counter);
   bpf_printk("unsup_expression=%lu", *unsup_expression);
-  bpf_printk("truncated_counter=%lu", *truncated_counter);
-  bpf_printk("catchall_count=%lu", *catchall_count);
+  bpf_printk("truncated=%lu", *truncated_counter);
+  bpf_printk("catchall=%lu", *catchall_count);
   bpf_printk("never=%lu", *never);
 
   bpf_printk("total_counter=%lu", *total_counter);
-  bpf_printk("(not_covered_count=%lu)", *not_covered_count);
+  bpf_printk("(not_covered=%lu)", *not_covered_count);
 }
 
 static void bump_samples() {
@@ -476,7 +476,7 @@ walk_user_stacktrace(bpf_user_pt_regs_t *regs,
     // is *always* 8 bytes ahead of the previous stack pointer.
     u64 previous_rip_addr =
         previous_rsp -
-        8; // the return address is 8 bytes ahead of the previous stack pointer
+        8; // the saved return address is 8 bytes ahead of the previous stack pointer
     u64 previous_rip = 0;
     int err = bpf_probe_read_user(
         &previous_rip, 8,
@@ -568,9 +568,9 @@ int profile_cpu(struct bpf_perf_event_data *ctx) {
     if (stack_id >= 0) {
       stack->user_stack_id = stack_id;
     }
-    // Send stack to userspace / aggregate it here.
+    // Aggregate stacks.
     u64 zero = 0;
-    u64 *scount = bpf_map_lookup_or_try_init(&counts, stack, &zero);
+    u64 *scount = bpf_map_lookup_or_try_init(&stack_counts, stack, &zero);
     if (scount) {
       __sync_fetch_and_add(scount, 1);
     }
@@ -594,9 +594,9 @@ int profile_cpu(struct bpf_perf_event_data *ctx) {
     int ret = walk_user_stacktrace(&ctx->regs, unwind_table,
                                    &stack->unwind_table_frames);
     if (ret == 0) {
-      // Send stack to userspace / aggregate it here.
+      // Aggregate stacks.
       u64 zero = 0;
-      u64 *scount = bpf_map_lookup_or_try_init(&counts, stack, &zero);
+      u64 *scount = bpf_map_lookup_or_try_init(&stack_counts, stack, &zero);
       if (scount) {
         __sync_fetch_and_add(scount, 1);
       }
