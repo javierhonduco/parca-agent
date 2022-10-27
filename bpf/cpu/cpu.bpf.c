@@ -35,7 +35,7 @@
       // processes we can unwind.
 #define MAX_BINARY_SEARCH_DEPTH                                                \
   20 // Binary search iterations. 2ˆ20 can bisect ~1_048_576 entries.
-#define MAX_UNWIND_TABLE_SIZE 130 * 1000 // Size of the unwind_table.
+#define MAX_UNWIND_TABLE_SIZE 250 * 1000 // Size of the unwind_table.
 
 /*============================== MACROS =====================================*/
 
@@ -91,9 +91,10 @@ typedef struct stack_count_key {
 // more items + make a better use of the CPU caches.
 typedef struct stack_unwind_row {
   u64 pc;
-  u64 cfa_reg;
-  s64 cfa_offset;
-  s64 rbp_offset;
+  u16 __reserved_do_not_use;
+  u16 cfa_reg;
+  s16 cfa_offset;
+  s16 rbp_offset;
 } stack_unwind_row_t;
 
 // Unwinding table representation.
@@ -340,9 +341,9 @@ static int find_offset_for_pc(__u32 index, void *data) {
 static __always_inline void show_row(stack_unwind_table_t *unwind_table,
                                      int index) {
   u64 pc = unwind_table->rows[index].pc;
-  int cfa_reg = unwind_table->rows[index].cfa_reg;
-  int cfa_offset = unwind_table->rows[index].cfa_offset;
-  int rbp_offset = unwind_table->rows[index].rbp_offset;
+  u16 cfa_reg = unwind_table->rows[index].cfa_reg;
+  s16 cfa_offset = unwind_table->rows[index].cfa_offset;
+  s16 rbp_offset = unwind_table->rows[index].rbp_offset;
 
   bpf_printk("~ %d entry. Loc: %llx, CFA reg: %d Offset: %d, $rbp %d", index,
              pc, cfa_reg, cfa_offset, rbp_offset);
@@ -435,9 +436,9 @@ walk_user_stacktrace(bpf_user_pt_regs_t *regs,
     stack->addresses[i] = current_rip;
 
     u64 found_pc = unwind_table->rows[table_idx].pc;
-    u64 found_cfa_reg = unwind_table->rows[table_idx].cfa_reg;
-    s64 found_cfa_offset = unwind_table->rows[table_idx].cfa_offset;
-    s64 found_rbp_offset = unwind_table->rows[table_idx].rbp_offset;
+    u16 found_cfa_reg = unwind_table->rows[table_idx].cfa_reg;
+    s16 found_cfa_offset = unwind_table->rows[table_idx].cfa_offset;
+    s16 found_rbp_offset = unwind_table->rows[table_idx].rbp_offset;
 
     bpf_printk("\tcfa reg: $%s, offset: %d (row pc: %llx)",
                found_cfa_reg == X86_64_REGISTER_RSP ? "rsp" : "rbp",
@@ -445,7 +446,7 @@ walk_user_stacktrace(bpf_user_pt_regs_t *regs,
 
     // HACK(javierhonduco): dwarf expressions aren't supported. We set these
     // values to the register and the offset to recognise them.
-    if (found_cfa_reg == 0xBEEF && found_cfa_offset == 0xBADFAD) {
+    if (found_cfa_reg == 0xBEE && found_cfa_offset == 0xBAD) {
       bpf_printk("\t!!!! CFA is an expression, bailing out");
       unwind_unsupported_expression();
       return 1;
@@ -585,8 +586,8 @@ int profile_cpu(struct bpf_perf_event_data *ctx) {
 
     if (ctx->regs.ip < unwind_table->rows[0].pc ||
         ctx->regs.ip > unwind_table->rows[last_idx].pc) {
-      bpf_printk("IP not covered. In kernel space / bug? IP %llx",
-                 ctx->regs.ip);
+      bpf_printk("IP not covered. In kernel space / bug? IP %llx (first %llx, last %llx)",
+                 ctx->regs.ip, unwind_table->rows[0].pc, unwind_table->rows[last_idx].pc);
       unwind_uncovered_error();
       return 0;
     }

@@ -33,7 +33,8 @@ const (
 	stackCountsMapName = "stack_counts"
 	stackTracesMapName = "stack_traces"
 	unwindTableMapName = "unwind_tables"
-	maxUnwindTableSize = 130 * 1000 // // Always needs to be sync with MAX_UNWIND_TABLE_SIZE in BPF program.
+	// With the current row structure, the max items we can store is 262k.
+	maxUnwindTableSize = 250 * 1000 // // Always needs to be sync with MAX_UNWIND_TABLE_SIZE in BPF program.
 )
 
 var (
@@ -167,16 +168,26 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.UnwindTable) error {
 			return fmt.Errorf("write the program counter: %w", err)
 		}
 
+		// Write __reserved_do_not_use.
+		if err := binary.Write(buf, m.byteOrder, uint16(0)); err != nil {
+			return fmt.Errorf("write CFA register bytes: %w", err)
+		}
+
 		// Write CFA.
 		switch row.CFA.Rule {
 		case frame.RuleCFA:
+			/*
+				u16 cfa_reg;
+				u16 __reserved_do_not_use;
+				s16 cfa_offset;
+				s16 rbp_offset; */
 			// Write CFA register.
-			if err := binary.Write(buf, m.byteOrder, row.CFA.Reg); err != nil {
+			if err := binary.Write(buf, m.byteOrder, uint16(row.CFA.Reg)); err != nil {
 				return fmt.Errorf("write CFA register bytes: %w", err)
 			}
 
 			// Write CFA offset.
-			if err := binary.Write(buf, m.byteOrder, row.CFA.Offset); err != nil {
+			if err := binary.Write(buf, m.byteOrder, int16(row.CFA.Offset)); err != nil {
 				return fmt.Errorf("write CFA offset bytes: %w", err)
 			}
 		case frame.RuleExpression:
@@ -184,12 +195,12 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.UnwindTable) error {
 			// values that we can use in the unwinder to detect when we should be using an expression.
 
 			// Write "fake" register.
-			if err := binary.Write(buf, m.byteOrder, uint64(0xBEEF)); err != nil {
+			if err := binary.Write(buf, m.byteOrder, int16(0xBEE)); err != nil {
 				return fmt.Errorf("write CFA Reg bytes: %w", err)
 			}
 
 			// Write "fake" offset.
-			if err := binary.Write(buf, m.byteOrder, uint64(0xBADFAD)); err != nil {
+			if err := binary.Write(buf, m.byteOrder, int16(0xBAD)); err != nil {
 				return fmt.Errorf("write CFA offset bytes: %w", err)
 			}
 		default:
@@ -197,7 +208,7 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.UnwindTable) error {
 		}
 
 		// Write $rbp offset.
-		if err := binary.Write(buf, m.byteOrder, row.RBP.Offset); err != nil {
+		if err := binary.Write(buf, m.byteOrder, int16(row.RBP.Offset)); err != nil {
 			return fmt.Errorf("write RBP offset bytes: %w", err)
 		}
 	}
