@@ -33,6 +33,7 @@ const (
 	stackCountsMapName = "stack_counts"
 	stackTracesMapName = "stack_traces"
 	unwindTableMapName = "unwind_tables"
+	programsMapName    = "programs"
 	// With the current row structure, the max items we can store is 262k.
 	maxUnwindTableSize = 250 * 1000 // // Always needs to be sync with MAX_UNWIND_TABLE_SIZE in BPF program.
 )
@@ -49,6 +50,7 @@ type bpfMaps struct {
 	stackCounts  *bpf.BPFMap
 	stackTraces  *bpf.BPFMap
 	unwindTables *bpf.BPFMap
+	programs     *bpf.BPFMap
 }
 
 // readUserStack reads the user stack trace from the stacktraces ebpf map into the given buffer.
