@@ -521,7 +521,7 @@ func defcfa(ctx *Context) {
 	reg, _ := util.DecodeULEB128(ctx.buf)
 	offset, _ := util.DecodeULEB128(ctx.buf)
 
-	frame.CFA.Rule = RuleCFA
+	frame.CFA.Rule = RuleCFA // @nocommit change to RuleRegisterOffset?
 	frame.CFA.Reg = reg
 	frame.CFA.Offset = int64(offset)
 }
@@ -562,10 +562,8 @@ func defcfaoffsetsf(ctx *Context) {
 func defcfaexpression(ctx *Context) {
 	frame := ctx.currentInstruction()
 
-	var (
-		l, _ = util.DecodeULEB128(ctx.buf)
-		expr = ctx.buf.Next(int(l))
-	)
+	l, _ := util.DecodeULEB128(ctx.buf)
+	expr := ctx.buf.Next(int(l))
 
 	frame.CFA.Expression = expr
 	frame.CFA.Rule = RuleExpression

@@ -15,10 +15,12 @@
 package unwind
 
 import (
+	"bytes"
 	"debug/elf"
 	"fmt"
 	"io"
 	"path"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -28,6 +30,7 @@ import (
 	"github.com/prometheus/procfs"
 
 	"github.com/parca-dev/parca-agent/internal/dwarf/frame"
+	"github.com/parca-dev/parca-agent/internal/dwarf/util"
 )
 
 // UnwindTableBuilder helps to build UnwindTable for a given PID.
@@ -181,6 +184,56 @@ func (ptb *UnwindTableBuilder) PrintTable(writer io.Writer, path string) error {
 				fmt.Fprintf(writer, "\tLoc: %x CFA: $%s=%-4d", tableRow.Loc, CFAReg, tableRow.CFA.Offset)
 			case frame.RuleExpression:
 				fmt.Fprintf(writer, "\tLoc: %x CFA: exp     ", tableRow.Loc)
+
+				plt1 := []byte{
+					frame.DW_OP_breg16,
+					frame.DW_OP_lit15,
+					frame.DW_OP_and,
+					frame.DW_OP_lit11,
+					frame.DW_OP_ge,
+					frame.DW_OP_lit3,
+					frame.DW_OP_shl,
+					frame.DW_OP_plus,
+				}
+				plt2 := []byte{
+					frame.DW_OP_breg16,
+					frame.DW_OP_lit15,
+					frame.DW_OP_and,
+					frame.DW_OP_lit10,
+					frame.DW_OP_ge,
+					frame.DW_OP_lit3,
+					frame.DW_OP_shl,
+					frame.DW_OP_plus,
+				}
+				libc := []byte{
+					0x1,
+					0x6,
+				}
+
+				bbbb := bytes.NewBuffer(tableRow.CFA.Expression)
+				_, _ = util.DecodeULEB128(bbbb)
+				bbbb.ReadByte() // why???
+
+				expr := make([]byte, 0)
+				fmt.Println("")
+
+				for _, t := range bbbb.Bytes() {
+					if t == 0x0 {
+						continue
+					}
+					fmt.Println("bytes", fmt.Sprintf("0x%x %d", t, t))
+					expr = append(expr, t)
+				}
+
+				if reflect.DeepEqual(plt1, expr) {
+
+				} else if reflect.DeepEqual(plt2, expr) {
+				} else if reflect.DeepEqual(libc, expr) {
+
+				} else {
+					fmt.Println(len(plt1), len(expr))
+					panic("expression not supported len")
+				}
 			default:
 				panic("CFA rule is not valid")
 			}
