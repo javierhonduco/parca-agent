@@ -19,7 +19,7 @@
 /*================================ CONSTANTS =================================*/
 
 // Number of frames to walk per tail call iteration.
-#define MAX_STACK_DEPTH_PER_PROGRAM 70
+#define MAX_STACK_DEPTH_PER_PROGRAM 20
 // Number of frames to walk in total.
 #define MAX_STACK_DEPTH 127
 // Number of frame pointer walked stacks stored in the
@@ -121,7 +121,10 @@ typedef struct stack_unwind_row {
 
 // Unwinding table representation.
 typedef struct stack_unwind_table_t {
+  u64 low_pc;
+  u64 high_pc;
   u64 table_len; // items of the table, as the max size is static.
+  u64 padding;
   stack_unwind_row_t rows[MAX_UNWIND_TABLE_SIZE];
 } stack_unwind_table_t;
 
@@ -147,7 +150,9 @@ u32 UNWIND_SAMPLES_COUNT = 7;
 
 BPF_HASH(stack_counts, stack_count_key_t, u64, MAX_STACK_COUNTS_ENTRIES);
 BPF_STACK_TRACE(stack_traces, MAX_FRAME_POINTER_WALKED_STACKS);
-BPF_HASH(unwind_tables, pid_t, stack_unwind_table_t, MAX_PID_MAP_SIZE);
+BPF_HASH(unwind_table_1, pid_t, stack_unwind_table_t, MAX_PID_MAP_SIZE);
+BPF_HASH(unwind_table_2, pid_t, stack_unwind_table_t, MAX_PID_MAP_SIZE);
+BPF_HASH(unwind_table_3, pid_t, stack_unwind_table_t, MAX_PID_MAP_SIZE);
 
 struct {
   __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -314,7 +319,7 @@ static u64 find_offset_for_pc(stack_unwind_table_t *table, u64 pc) {
 // Print an unwinding table row for debugging.
 static __always_inline void show_row(stack_unwind_table_t *unwind_table,
                                      int index) {
-  /*
+
   u64 pc = unwind_table->rows[index].pc;
   u16 cfa_type = unwind_table->rows[index].cfa_type;
   s16 cfa_offset = unwind_table->rows[index].cfa_offset;
@@ -322,25 +327,63 @@ static __always_inline void show_row(stack_unwind_table_t *unwind_table,
 
   bpf_printk("~ %d entry. Loc: %llx, CFA reg: %d Offset: %d, $rbp %d", index,
              pc, cfa_type, cfa_offset, rbp_offset);
-  */
+}
+
+// Finds whether a process should be unwound using the unwind
+// tables.
+static __always_inline bool has_unwind_information(pid_t pid) {
+  stack_unwind_table_t *shard1 = bpf_map_lookup_elem(&unwind_table_1, &pid);
+  if (shard1) {
+    return true;
+  }
+  return false;
+}
+
+// Finds the unwind table for a given pid and program counter.
+// Returns NULL if it can't be found, so this function can't be used to detect
+// how should we unwind the native stack for a process. See
+// `has_unwind_information()`
+//
+static __always_inline stack_unwind_table_t *find_unwind_table(pid_t pid,
+                                                               u64 pc) {
+  stack_unwind_table_t *shard1 = bpf_map_lookup_elem(&unwind_table_1, &pid);
+  if (shard1) {
+    if (shard1->low_pc <= pc && pc <= shard1->high_pc) {
+      bpf_printk("\t Shard 1");
+      return shard1;
+    }
+  }
+
+  stack_unwind_table_t *shard2 = bpf_map_lookup_elem(&unwind_table_2, &pid);
+  if (shard2) {
+    if (shard2->low_pc <= pc && pc <= shard2->high_pc) {
+      bpf_printk("\t Shard 2");
+      return shard2;
+    }
+  }
+
+  stack_unwind_table_t *shard3 = bpf_map_lookup_elem(&unwind_table_3, &pid);
+  if (shard3) {
+    if (shard3->low_pc <= pc && pc <= shard3->high_pc) {
+      bpf_printk("\t Shard 3");
+      return shard3;
+    }
+  }
+
+  return NULL;
 }
 
 SEC("perf_event")
 int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
+  int tgid = bpf_get_current_pid_tgid() >> 32;
+
   bool reached_bottom_of_stack = false;
   u64 zero = 0;
-  u64 pid = bpf_get_current_pid_tgid();
 
   unwind_state_t *unwind_state =
       bpf_map_lookup_elem(&unwind_state_storage, &zero);
   if (unwind_state == NULL) {
     bpf_printk("unwind_state is NULL, should not happen");
-    return 1;
-  }
-  stack_unwind_table_t *unwind_table =
-      bpf_map_lookup_elem(&unwind_tables, &pid);
-  if (unwind_table == NULL) {
-    bpf_printk("unwind_table is NULL, should not happen");
     return 1;
   }
 
@@ -357,6 +400,14 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
     bpf_printk("\tcurrent pc: %llx", unwind_state->ip);
     bpf_printk("\tcurrent sp: %llx", unwind_state->sp);
     bpf_printk("\tcurrent bp: %llx", unwind_state->bp);
+
+    stack_unwind_table_t *unwind_table =
+        find_unwind_table(tgid, unwind_state->ip);
+
+    if (unwind_table == NULL) {
+      reached_bottom_of_stack = true;
+      break;
+    }
 
     u64 table_idx = find_offset_for_pc(unwind_table, unwind_state->ip);
 
@@ -376,32 +427,14 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
       return 1;
     }
 
-    u64 last_idx = unwind_table->table_len - 1;
-    // Appease the verifier.
-    if (last_idx < 0 || last_idx >= MAX_UNWIND_TABLE_SIZE) {
-      bpf_printk("\t[error] this should never happen");
-      BUMP_UNWIND_SHOULD_NEVER_HAPPEN_ERROR();
-      return 0;
-    }
-
-    // We've reached the bottom of the stack once we don't find an unwind
-    // entry for the given program counter and the current frame pointer
-    // is 0. As per the x86_64 ABI:
-    //
-    // From 3.4.1 Initial Stack and Register State
-    // > %rbp The content of this register is unspecified at process
-    // > initialization time, > but the user code should mark the deepest
-    // > stack frame by setting the frame > pointer to zero.
-    //
-    // https://refspecs.linuxbase.org/elf/x86_64-abi-0.99.pdf
-    if ((unwind_state->ip < unwind_table->rows[0].pc ||
-         unwind_state->ip > unwind_table->rows[last_idx].pc) &&
-        unwind_state->bp == 0) {
-      bpf_printk("======= reached main! =======");
-      BUMP_UNWIND_SUCCESS();
-      reached_bottom_of_stack = true;
-      break;
-    }
+    /*     u64 last_idx = unwind_table->table_len - 1;
+        // Appease the verifier.
+        if (last_idx < 0 || last_idx >= MAX_UNWIND_TABLE_SIZE) {
+          bpf_printk("\t[error] this should never happen");
+          BUMP_UNWIND_SHOULD_NEVER_HAPPEN_ERROR();
+          return 0;
+        }
+     */
 
     // Add address to stack.
     u64 len = stack->unwind_table_frames.len;
@@ -503,16 +536,34 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
   }
 
   if (reached_bottom_of_stack) {
-    // Aggregate stacks.
-    u64 *scount = bpf_map_lookup_or_try_init(&stack_counts, stack, &zero);
-    if (scount) {
-      __sync_fetch_and_add(scount, 1);
+    // We've reached the bottom of the stack once we don't find an unwind
+    // entry for the given program counter and the current frame pointer
+    // is 0. As per the x86_64 ABI:
+    //
+    // From 3.4.1 Initial Stack and Register State
+    // > %rbp The content of this register is unspecified at process
+    // > initialization time, > but the user code should mark the deepest
+    // > stack frame by setting the frame > pointer to zero.
+    //
+    // https://refspecs.linuxbase.org/elf/x86_64-abi-0.99.pdf
+    if (unwind_state->bp == 0) {
+      bpf_printk("======= reached main! =======");
+      BUMP_UNWIND_SUCCESS();
+      // Aggregate stacks.
+      u64 *scount = bpf_map_lookup_or_try_init(&stack_counts, stack, &zero);
+      if (scount) {
+        __sync_fetch_and_add(scount, 1);
+      }
+      bpf_printk("yesssss :)");
+    } else {
+      bpf_printk("[error] Could not find unwind table and rbp != 0 (%llx), this is bad", unwind_state->bp);
+      BUMP_UNWIND_SHOULD_NEVER_HAPPEN_ERROR();
     }
-    bpf_printk("yesssss :)");
     return 0;
   } else if (stack->unwind_table_frames.len < MAX_STACK_DEPTH &&
              unwind_state->tail_calls < MAX_TAIL_CALLS) {
-    bpf_printk("Continuing walking the stack in a tail call");
+    bpf_printk("Continuing walking the stack in a tail call, current tail %d",
+               unwind_state->tail_calls);
     unwind_state->tail_calls++;
     bpf_tail_call(ctx, &programs, 0);
   }
@@ -552,14 +603,8 @@ walk_user_stacktrace(struct bpf_perf_event_data *ctx, bpf_user_pt_regs_t *regs,
   u64 table_len = unwind_table->table_len;
   // Just for debugging to ensure that the data we are reading
   // matches what we wrote.
+  // @nocommit remove.
   bpf_printk("- unwind table has %d items", table_len);
-
-  // Invariant check.
-  if (table_len >= MAX_UNWIND_TABLE_SIZE) {
-    bpf_printk("should never happen");
-    BUMP_UNWIND_SHOULD_NEVER_HAPPEN_ERROR();
-    return 1;
-  }
 
   set_initial_state(&ctx->regs);
   bpf_tail_call(ctx, &programs, 0);
@@ -568,9 +613,9 @@ walk_user_stacktrace(struct bpf_perf_event_data *ctx, bpf_user_pt_regs_t *regs,
 
 SEC("perf_event")
 int profile_cpu(struct bpf_perf_event_data *ctx) {
-  u64 id = bpf_get_current_pid_tgid();
-  u32 tgid = id >> 32;
-  u32 pid = id;
+  u64 pid_tgid = bpf_get_current_pid_tgid();
+  int tgid = pid_tgid >> 32;
+  int pid = pid_tgid;
 
   if (pid == 0)
     return 0;
@@ -584,7 +629,7 @@ int profile_cpu(struct bpf_perf_event_data *ctx) {
 
   // Reset global state.
   stack->unwind_table_frames.len = 0;
-  stack->pid = tgid;
+  stack->pid = pid;
   stack->user_stack_id = 0;
   stack->kernel_stack_id = 0;
 
@@ -594,12 +639,11 @@ int profile_cpu(struct bpf_perf_event_data *ctx) {
     stack->kernel_stack_id = kernel_stack_id;
   }
 
-  stack_unwind_table_t *unwind_table =
-      bpf_map_lookup_elem(&unwind_tables, &pid);
-
+  // @nocommit improve
+  bool has_unwind_info = has_unwind_information(pid);
   // Check if the process is eligible for the unwind table or frame pointer
   // unwinders.
-  if (unwind_table == NULL) {
+  if (!has_unwind_info) {
     int stack_id = bpf_get_stackid(ctx, &stack_traces, BPF_F_USER_STACK);
     if (stack_id >= 0) {
       stack->user_stack_id = stack_id;
@@ -611,26 +655,22 @@ int profile_cpu(struct bpf_perf_event_data *ctx) {
       __sync_fetch_and_add(scount, 1);
     }
   } else {
-    u64 last_idx = unwind_table->table_len - 1;
-    // Appease the verifier.
-    if (last_idx < 0 || last_idx >= MAX_UNWIND_TABLE_SIZE) {
-      bpf_printk("\t[error] this should never happen");
-      BUMP_UNWIND_SHOULD_NEVER_HAPPEN_ERROR();
-      return 0;
-    }
-
-    if (ctx->regs.ip < unwind_table->rows[0].pc ||
-        ctx->regs.ip > unwind_table->rows[last_idx].pc) {
-      bpf_printk("IP not covered. In kernel space / bug? IP %llx (first %llx, "
-                 "last %llx)",
-                 ctx->regs.ip, unwind_table->rows[0].pc,
-                 unwind_table->rows[last_idx].pc);
+    stack_unwind_table_t *unwind_table = find_unwind_table(pid, ctx->regs.ip);
+    if (unwind_table == NULL) {
+      bpf_printk("IP not covered. In kernel space / bug? IP %llx)",
+                 ctx->regs.ip);
       BUMP_UNWIND_PC_NOT_COVERED_ERROR();
       return 0;
     }
 
-    walk_user_stacktrace(ctx, &ctx->regs, unwind_table,
-                         &stack->unwind_table_frames);
+    u64 last_idx = unwind_table->table_len - 1;
+    // Appease the verifier.
+    if (last_idx < 0 || last_idx >= MAX_UNWIND_TABLE_SIZE) {
+      bpf_printk("\t[error] this should never happen %d", __LINE__);
+      BUMP_UNWIND_SHOULD_NEVER_HAPPEN_ERROR();
+      return 0;
+    }
+
     // javierhonduco: Debug output to ensure that the maps are correctly
     // populated by comparing it with the data
     // we are writing. Remove later on.
@@ -638,6 +678,10 @@ int profile_cpu(struct bpf_perf_event_data *ctx) {
     show_row(unwind_table, 1);
     show_row(unwind_table, 2);
     show_row(unwind_table, last_idx);
+
+    bpf_printk("pid %d tgid %d", pid, tgid);
+    walk_user_stacktrace(ctx, &ctx->regs, unwind_table,
+                         &stack->unwind_table_frames);
   }
 
   return 0;
