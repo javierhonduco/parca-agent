@@ -15,6 +15,7 @@
 package main
 
 import (
+	"debug/elf"
 	"fmt"
 	"os"
 
@@ -50,4 +51,13 @@ func main() {
 		// nolint
 		fmt.Println("failed with:", err)
 	}
+
+	elfFile, err := elf.Open(executablePath)
+	if err != nil {
+		// nolint
+		fmt.Println("failed with:", err)
+	}
+
+	fmt.Println(elfFile.FileHeader.Type == elf.ET_DYN)
+	//fmt.Println(elfFile.Sec.)
 }

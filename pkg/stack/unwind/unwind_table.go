@@ -132,14 +132,44 @@ func (ptb *UnwindTableBuilder) UnwindTableForPid(pid int) (UnwindTable, error) {
 
 		// TODO(javierhonduco): Revisit this logic with PIE executables as it's only correct
 		// for non-PIE ones.
+		//
+		//
+		// Ruby: /home/javierhonduco/.rbenv/versions/3.1.2/bin/ruby
+		// 	- adjustment: no
+		// 	- PIE: no
+		// - ET_DYN: no
+		//
+		// Python: /usr/bin/python3.10
+		// - adjusment: yes (but seems to work without)
+		// - PIE: yes
+		// - ET_DYN: yes
+		//
+		// Test binary: /home/javierhonduco/code/parca-agent/testdata/out/basic-cpp-no-fp
+		// 	- adjustment: no
+		// 	- PIE: no
+		// - ET_DYN: no
+
+		elfFile, err := elf.Open(executablePath)
+		if err != nil {
+			// nolint
+			fmt.Println("failed with:", err)
+		}
+
+		ASLRElegible := elfFile.FileHeader.Type == elf.ET_DYN
+
 		if strings.Contains(executablePath, mainExec) {
-			ut = append(ut, rows...)
+			if ASLRElegible {
+				for i := range rows {
+					rows[i].Loc += uint64(m.StartAddr)
+				}
+			}
 		} else {
 			for i := range rows {
 				rows[i].Loc += uint64(m.StartAddr)
 			}
-			ut = append(ut, rows...)
 		}
+		ut = append(ut, rows...)
+
 	}
 
 	// Sort the entries so we can binary search over them.
