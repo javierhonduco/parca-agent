@@ -480,15 +480,7 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
     s16 found_cfa_offset = unwind_table->rows[table_idx].cfa_offset;
     s16 found_rbp_offset = unwind_table->rows[table_idx].rbp_offset;
 
-    bpf_printk("\tcfa reg: $%s, offset: %d (row pc: %llx)",
-               found_cfa_type == CFA_TYPE_RSP ? "rsp" : "rbp", found_cfa_offset,
-               found_pc);
-
-    if (found_cfa_type == CFA_TYPE_EXPRESSION) {
-      bpf_printk("\t!!!! CFA is an expression, bailing out");
-      BUMP_UNWIND_UNSUPPORTED_EXPRESSION();
-      return 1;
-    }
+    bpf_printk("\tcfa type: $%s, offset: %d (row pc: %llx)", found_cfa_type, found_cfa_offset, found_pc);
 
     if (found_rbp_type == RBP_TYPE_REGISTER ||
         found_rbp_type == RBP_TYPE_EXPRESSION) {
@@ -503,6 +495,27 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
       previous_rsp = unwind_state->bp + found_cfa_offset;
     } else if (found_cfa_type == CFA_TYPE_RSP) {
       previous_rsp = unwind_state->sp + found_cfa_offset;
+    } else if (found_cfa_type == CFA_TYPE_EXPRESSION) {
+      if (found_cfa_offset == 0) {
+        bpf_printk("[error] CFA is an unsupported expression, bailing out");
+        BUMP_UNWIND_UNSUPPORTED_EXPRESSION();
+        return 1;
+      }
+
+      u64 threshold = 0;
+      if (found_cfa_offset == 1) {
+        threshold = 11;
+      } else if (found_cfa_offset == 2) {
+        threshold = 10;
+      }
+
+      if (threshold == 0) {
+        BUMP_UNWIND_SHOULD_NEVER_HAPPEN_ERROR();
+        return 1;
+      }
+
+      previous_rsp = unwind_state->sp + 8 + ((((unwind_state->ip & 15) >= threshold)? 1 : 0)<< 3);
+      bpf_printk("CFA expression found with id %d", found_cfa_offset);
     } else {
       bpf_printk("\t[error] register %d not valid (expected $rbp or $rsp)",
                  found_cfa_type);

@@ -15,7 +15,6 @@
 package unwind
 
 import (
-	"bytes"
 	"debug/elf"
 	"fmt"
 	"io"
@@ -196,44 +195,12 @@ func (ptb *UnwindTableBuilder) PrintTable(writer io.Writer, path string) error {
 				CFAReg := x64RegisterToString(tableRow.CFA.Reg)
 				fmt.Fprintf(writer, "\tLoc: %x CFA: $%s=%-4d", tableRow.Loc, CFAReg, tableRow.CFA.Offset)
 			case frame.RuleExpression:
-
-				bbbb := bytes.NewBuffer(tableRow.CFA.Expression)
-				//_, _ = util.DecodeULEB128(bbbb)
-				bbbb.ReadByte() // why???
-				bbbb.ReadByte() // why???
-				expr := make([]byte, 0)
-				//panic(tableRow.CFA.Expression)
-				for _, t := range bbbb.Bytes() { // WHU!!!
-					if t == 0x0 {
-						continue
-					}
-					fmt.Println("\nbytes", fmt.Sprintf("0x%x %d %d", t, t, frame.Plt1[len(expr)]))
-					expr = append(expr, t)
+				expressionId, err := ExpressionIdentifier(tableRow.CFA.Expression)
+				if err == nil {
+					fmt.Fprintf(writer, "\tLoc: %x CFA: exp (plt %d)", tableRow.Loc, expressionId)
+				} else {
+					fmt.Fprintf(writer, "\tLoc: %x CFA: exp     ", tableRow.Loc)
 				}
-				fmt.Printf("%v\n", expr)
-				fmt.Printf("%v\n", frame.Plt1)
-
-				EqualBytes := func(a []byte, b []byte) bool {
-					if len(a) != len(b) {
-						return false
-					}
-					for i := range a {
-						if a[i] != b[i] {
-							return false
-						}
-					}
-					return true
-				}
-				if EqualBytes(frame.Plt1[:], expr) {
-					panic("PLT1")
-
-				}
-
-				if EqualBytes(frame.Plt2[:], expr) {
-					panic("PLT2")
-
-				}
-				fmt.Fprintf(writer, "\tLoc: %x CFA: exp     ", tableRow.Loc)
 			default:
 				return fmt.Errorf("CFA rule is not valid. This should never happen")
 			}

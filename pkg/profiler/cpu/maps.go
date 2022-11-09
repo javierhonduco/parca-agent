@@ -275,6 +275,11 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.UnwindTable) error {
 				CFAOffset = int16(row.CFA.Offset)
 			case frame.RuleExpression:
 				CFARegister = uint8(CfaRegisterExpression)
+				expressionId, err := unwind.ExpressionIdentifier(row.CFA.Expression)
+				if err == nil {
+					CFAOffset = int16(expressionId)
+				}
+
 			default:
 				return fmt.Errorf("CFA rule is not valid. This should never happen")
 			}

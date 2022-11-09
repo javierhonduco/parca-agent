@@ -1,39 +1,16 @@
 // nolint:stylecheck
 package frame
 
-// Dwarf expression constats that we recognise.
-var Plt1 = [...]byte{
-	DW_OP_breg16,
-	DW_OP_lit15,
-	DW_OP_and,
-	DW_OP_lit11,
-	DW_OP_ge,
-	DW_OP_lit3,
-	DW_OP_shl,
-	DW_OP_plus,
-}
-
-var Plt2 = [...]byte{
-	DW_OP_breg16,
-	DW_OP_lit15,
-	DW_OP_and,
-	DW_OP_lit10,
-	DW_OP_ge,
-	DW_OP_lit3,
-	DW_OP_shl,
-	DW_OP_plus,
-}
-
 // Operation opcodes.
 const (
-	DW_OP_addr    = 0x03
-	DW_OP_deref   = 0x06
-	DW_OP_const1u = 0x08
-	DW_OP_const1s = 0x09
+	DW_OP_addr  = 0x03
+	DW_OP_deref = 0x06
 )
 
 const (
-	DW_OP_const2u = iota + 0x0a
+	DW_OP_const1u = iota + 0x08
+	DW_OP_const1s
+	DW_OP_const2u
 	DW_OP_const2s
 	DW_OP_const4u
 	DW_OP_const4s
