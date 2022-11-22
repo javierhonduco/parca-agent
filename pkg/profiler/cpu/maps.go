@@ -35,6 +35,7 @@ const (
 	stackTracesMapName      = "stack_traces"
 	dwarfStackTracesMapName = "dwarf_stack_traces"
 	unwindTablesMapName     = "unwind_tables"
+	processInfoMapName      = "process_info"
 	programsMapName         = "programs"
 
 	// With the current row structure, the max items we can store is 262k per map.
@@ -78,9 +79,14 @@ type bpfMaps struct {
 	stackTraces      *bpf.BPFMap
 	dwarfStackTraces *bpf.BPFMap
 
+	processInfo  *bpf.BPFMap
 	unwindTables *bpf.BPFMap
 	programs     *bpf.BPFMap
 }
+
+var (
+	tableID = 100
+)
 
 func initializeMaps(m *bpf.Module, byteOrder binary.ByteOrder) (*bpfMaps, error) {
 	if m == nil {
@@ -142,11 +148,18 @@ func (m *bpfMaps) create() error {
 		return fmt.Errorf("get dwarf stack traces map: %w", err)
 	}
 
+	processInfo, err := m.module.GetMap(processInfoMapName)
+	if err != nil {
+		return fmt.Errorf("get process info map: %w", err)
+	}
+
 	m.debugPIDs = debugPIDs
 	m.stackCounts = stackCounts
 	m.stackTraces = stackTraces
 	m.unwindTables = unwindTables
 	m.dwarfStackTraces = dwarfStackTraces
+	m.processInfo = processInfo
+
 	return nil
 }
 
@@ -311,14 +324,53 @@ func (m *bpfMaps) clean() error {
 }
 
 // setUnwindTable updates the unwind tables with the given unwind table.
-func (m *bpfMaps) setUnwindTable(pid int, ut unwind.UnwindTable) error {
-	buf := new(bytes.Buffer)
+func (m *bpfMaps) setUnwindTable(pid int, baseAddress uint64, ut unwind.UnwindTable, procInfoBuf *bytes.Buffer, minPC uint64, maxPC uint64) error {
+	buf := new(bytes.Buffer) // prealloc?
+
+	//////////////////
+	// This function is now called for every executable
+	// We need to
+	// 	- set the process information
+	//	- set the shards
+	// @nocommit: ensure everything's sane, use global PIDs
+	//////////////////
 
 	if len(ut) >= maxUnwindSize {
 		return fmt.Errorf("maximum unwind table size reached. Table size %d, but max size is %d", len(ut), maxUnwindSize)
 	}
+	fmt.Println("===== base address", fmt.Sprintf("%x", baseAddress), "low", fmt.Sprintf("%x", ut[0].Loc), "high", fmt.Sprintf("%x", ut[len(ut)-1].Loc))
+	/*
+		u64 load_address;
+		u64 begin;
+		u64 end;
+		int table_id;
+		int shard_count; */
+
+	// .load_address;
+	if err := binary.Write(procInfoBuf, m.byteOrder, baseAddress); err != nil {
+		return fmt.Errorf("write RBP offset bytes: %w", err)
+	}
+
+	// .begin
+	if err := binary.Write(procInfoBuf, m.byteOrder, minPC+baseAddress); err != nil {
+		return fmt.Errorf("write RBP offset bytes: %w", err)
+	}
+	// .end
+	if err := binary.Write(procInfoBuf, m.byteOrder, maxPC+baseAddress); err != nil {
+		return fmt.Errorf("write RBP offset bytes: %w", err)
+	}
+	fmt.Println("============= table id", tableID)
+	// .table_id
+	if err := binary.Write(procInfoBuf, m.byteOrder, int32(tableID)); err != nil {
+		return fmt.Errorf("write RBP offset bytes: %w", err)
+	}
+	// .shard_count @nocommit
+	if err := binary.Write(procInfoBuf, m.byteOrder, int32(0)); err != nil {
+		return fmt.Errorf("write RBP offset bytes: %w", err)
+	}
 
 	// Range-partition the unwind table in the different shards.
+	lastShardIndex := len(ut) / maxUnwindTableSize
 	shardIndex := 0
 	for i := 0; i < len(ut); i += maxUnwindTableSize {
 		upTo := i + maxUnwindTableSize
@@ -329,11 +381,25 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.UnwindTable) error {
 		chunk := ut[i:upTo]
 
 		// Write `.low_pc`
-		if err := binary.Write(buf, m.byteOrder, chunk[0].Loc); err != nil {
+		var lowPC uint64
+		if shardIndex == 0 {
+			lowPC = minPC
+		} else {
+			lowPC = chunk[0].Loc
+		}
+
+		if err := binary.Write(buf, m.byteOrder, lowPC); err != nil {
 			return fmt.Errorf("write the number of rows: %w", err)
 		}
+
 		// Write `.high_pc`.
-		if err := binary.Write(buf, m.byteOrder, chunk[len(chunk)-1].Loc); err != nil {
+		var highPC uint64
+		if shardIndex == lastShardIndex {
+			highPC = maxPC
+		} else {
+			highPC = chunk[len(chunk)-1].Loc
+		}
+		if err := binary.Write(buf, m.byteOrder, highPC); err != nil {
 			return fmt.Errorf("write the number of rows: %w", err)
 		}
 		// Write number of rows `.table_len`.
@@ -413,9 +479,9 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.UnwindTable) error {
 			}
 		}
 
-		// Set (PID, shard ID) -> unwind table for each shard.
+		// Set (table ID, shard ID) -> unwind table for each shard.
 		keyBuf := new(bytes.Buffer)
-		if err := binary.Write(keyBuf, m.byteOrder, int32(pid)); err != nil {
+		if err := binary.Write(keyBuf, m.byteOrder, int32(tableID)); err != nil { // @nocommit data type is mixed no?
 			return fmt.Errorf("write RBP offset bytes: %w", err)
 		}
 		if err := binary.Write(keyBuf, m.byteOrder, int32(shardIndex)); err != nil {
@@ -425,32 +491,10 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.UnwindTable) error {
 		if err := m.unwindTables.Update(unsafe.Pointer(&keyBuf.Bytes()[0]), unsafe.Pointer(&buf.Bytes()[0])); err != nil {
 			return fmt.Errorf("update unwind tables: %w", err)
 		}
+		tableID++
 		shardIndex++
 		buf.Reset()
 	}
-
-	// HACK(javierhonduco): remove this.
-	// Debug stuff to compare this with the BPF program's view of the world.
-	/* printRow := func(w io.Writer, pt unwind.UnwindTable, index int) {
-		cfaInfo := ""
-		switch ut[index].CFA.Rule {
-		case frame.RuleCFA:
-			cfaInfo = fmt.Sprintf("CFA Reg: %d Offset:%d", ut[index].CFA.Reg, ut[index].CFA.Offset)
-		case frame.RuleExpression:
-			cfaInfo = "CFA exp"
-		default:
-			panic("CFA rule is not valid. This should never happen.")
-		}
-
-		fmt.Fprintf(w, "\trow[%d]. Loc: %x, %s, $rbp: %d\n", index, pt[index].Loc, cfaInfo, pt[index].RBP.Offset)
-	}
-
-	fmt.Fprintf(os.Stdout, "\t- Total entries %d\n\n", len(ut))
-	printRow(os.Stdout, ut, 0)
-	printRow(os.Stdout, ut, 1)
-	printRow(os.Stdout, ut, 2)
-	printRow(os.Stdout, ut, 6)
-	printRow(os.Stdout, ut, len(ut)-1) */
 
 	return nil
 }

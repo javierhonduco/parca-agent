@@ -16,6 +16,7 @@ package unwind
 
 import (
 	"debug/elf"
+	"errors"
 	"fmt"
 	"io"
 	"path"
@@ -114,54 +115,68 @@ func processMaps(pid int) (map[string]*procfs.ProcMap, string, error) {
 	return dynamicExecutables, mainExecutable, nil
 }
 
-func (ptb *UnwindTableBuilder) UnwindTableForPid(pid int) (UnwindTable, error) {
+func (ptb *UnwindTableBuilder) UnwindTablesForExecutable(executablePath string) (UnwindTable, uint64, uint64, error) {
+	level.Info(ptb.logger).Log("msg", "finding tables for mapped executable", "path", executablePath)
+	fdes, err := ptb.readFDEs(executablePath)
+	// TODO(javierhonduco): Add markers in between executable sections.
+	if err != nil {
+		level.Error(ptb.logger).Log("msg", "failed to read frame description entries", "obj", executablePath, "err", err)
+		return nil, 0, 0, err
+	}
+
+	rows := buildUnwindTable(fdes)
+	if len(rows) == 0 {
+		level.Error(ptb.logger).Log("msg", "unwind table empty for", "obj", executablePath)
+		return nil, 0, 0, errors.New("found zero FDEs")
+	}
+
+	level.Info(ptb.logger).Log("msg", "adding tables for mapped executable", "path", executablePath, "rows", len(rows), "low pc", fmt.Sprintf("%x", rows[0].Loc), "high pc", fmt.Sprintf("%x", rows[len(rows)-1].Loc))
+
+	//panic(fdes[len(fdes)-1].End())
+	// begin as well?
+	//rows = append(rows, UnwindTableRow{Loc: fdes[len(fdes)-1].End()})
+	sort.Sort(rows)
+	sort.Sort(fdes)
+
+	return rows, fdes[0].Begin(), fdes[len(fdes)-1].End(), nil
+}
+
+type MappedExecutables struct {
+	Base uint64
+	Path string
+}
+
+func (ptb *UnwindTableBuilder) ExecutableMappingsForPid(pid int) ([]MappedExecutables, error) {
+	result := make([]MappedExecutables, 0)
+
 	mappedFiles, mainExec, err := processMaps(pid)
 	if err != nil {
 		return nil, fmt.Errorf("error opening the maps %w", err)
 	}
 
-	ut := UnwindTable{}
 	for _, m := range mappedFiles {
 		executablePath := path.Join(fmt.Sprintf("/proc/%d/root", pid), m.Pathname)
-
-		level.Info(ptb.logger).Log("msg", "finding tables for mapped executable", "path", executablePath, "starting address", fmt.Sprintf("%x", m.StartAddr))
-		fdes, err := ptb.readFDEs(executablePath)
-		// TODO(javierhonduco): Add markers in between executable sections.
-		if err != nil {
-			level.Error(ptb.logger).Log("msg", "failed to read frame description entries", "obj", executablePath, "err", err)
-			continue
-		}
-
-		rows := buildUnwindTable(fdes)
-		if len(rows) == 0 {
-			level.Error(ptb.logger).Log("msg", "unwind table empty for", "obj", executablePath)
-			continue
-		}
-
-		level.Info(ptb.logger).Log("msg", "adding tables for mapped executable", "path", executablePath, "rows", len(rows), "low pc", fmt.Sprintf("%x", rows[0].Loc), "high pc", fmt.Sprintf("%x", rows[len(rows)-1].Loc))
 
 		aslrElegible, err := executable.IsASLRElegible(executablePath)
 		if err != nil {
 			return nil, fmt.Errorf("ASLR check failed with with: %w", err)
 		}
 
+		base := uint64(0)
+
 		if strings.Contains(executablePath, mainExec) {
 			if aslrElegible {
-				for i := range rows {
-					rows[i].Loc += uint64(m.StartAddr)
-				}
+				base = uint64(m.StartAddr)
 			}
 		} else {
-			for i := range rows {
-				rows[i].Loc += uint64(m.StartAddr)
-			}
+			base = uint64(m.StartAddr)
+
 		}
-		ut = append(ut, rows...)
+
+		result = append(result, MappedExecutables{Base: base, Path: executablePath})
 	}
 
-	// Sort the entries so we can binary search over them.
-	sort.Sort(ut)
-	return ut, nil
+	return result, nil
 }
 
 func x64RegisterToString(reg uint64) string {

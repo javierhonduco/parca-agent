@@ -19,6 +19,7 @@ import "C" //nolint:all
 import (
 	"bytes"
 	"context"
+	"debug/elf"
 	_ "embed"
 	"encoding/binary"
 	"errors"
@@ -33,15 +34,16 @@ import (
 	bpf "github.com/aquasecurity/libbpfgo"
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
+	"github.com/goburrow/cache"
 	"github.com/google/pprof/profile"
 	"github.com/hashicorp/go-multierror"
 
-	"github.com/goburrow/cache"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/procfs"
 	"golang.org/x/sys/unix"
 
 	"github.com/parca-dev/parca-agent/pkg/address"
+	"github.com/parca-dev/parca-agent/pkg/buildid"
 	"github.com/parca-dev/parca-agent/pkg/byteorder"
 	"github.com/parca-dev/parca-agent/pkg/objectfile"
 	"github.com/parca-dev/parca-agent/pkg/process"
@@ -236,7 +238,7 @@ func (p *CPU) Run(ctx context.Context) error {
 	if err := m.InitGlobalVariable(configKey, Config{Debug: debugEnabled}); err != nil {
 		return fmt.Errorf("init global variable: %w", err)
 	}
-
+	// resize map
 	if err := m.BPFLoadObject(); err != nil {
 		return fmt.Errorf("load bpf object: %w", err)
 	}
@@ -399,8 +401,7 @@ func (p *CPU) Run(ctx context.Context) error {
 func (p *CPU) watchProcesses(ctx context.Context, pfs procfs.FS, matchers []*regexp.Regexp) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
-
-	unwindTableCache := cache.New(cache.WithExpireAfterWrite(20 * time.Minute))
+	unwindTableCache := cache.New(cache.WithExpireAfterWrite(10 * time.Minute))
 
 	for {
 		select {
@@ -451,25 +452,79 @@ func (p *CPU) watchProcesses(ctx context.Context, pfs procfs.FS, matchers []*reg
 
 		// Can only be enabled when a debug process name is specified.
 		if p.enableDWARFUnwinding {
+			/* 			// Update unwind tables for the given pids.
+			   			for _, pid := range pids {
+			   				level.Info(p.logger).Log("msg", "adding unwind tables", "pid", pid)
+
+			   				executableMappings, err := p.unwindTableBuilder.ExecutableMappingsForPid(pid)
+			   				if err != nil {
+			   					level.Warn(p.logger).Log("msg", "failed to build unwind table", "pid", pid, "err", err)
+			   					continue
+			   				}
+
+			   				procInfoBuf := new(bytes.Buffer)
+
+			   				// .len;
+			   				if err := binary.Write(procInfoBuf, p.bpfMaps.byteOrder, uint64(len(executableMappings))); err != nil { // @nocommit
+			   					panic(fmt.Errorf("write RBP offset bytes: %w", err))
+			   				}
+			   			} */
+
 			// Update unwind tables for the given pids.
 			for _, pid := range pids {
 				if _, exists := unwindTableCache.GetIfPresent(pid); exists {
 					continue
 				}
 				level.Info(p.logger).Log("msg", "adding unwind tables", "pid", pid)
+				procInfoBuf := new(bytes.Buffer)
 
-				pt, err := p.unwindTableBuilder.UnwindTableForPid(pid)
-				if err != nil {
-					level.Warn(p.logger).Log("msg", "failed to build unwind table", "pid", pid, "err", err)
-					continue
+				executableMappings, _ := p.unwindTableBuilder.ExecutableMappingsForPid(pid)
+				// .len;
+				if err := binary.Write(procInfoBuf, p.bpfMaps.byteOrder, uint64(len(executableMappings))); err != nil { // @nocommit
+					panic(fmt.Errorf("write RBP offset bytes: %w", err))
 				}
 
-				if err := p.bpfMaps.setUnwindTable(pid, pt); err != nil {
-					level.Warn(p.logger).Log("msg", "failed to update unwind tables", "pid", pid, "err", err)
-					continue
+				for _, executableMapping := range executableMappings {
+					//fmt.Println("msg", "finding tables for mapped executable", "path", executableMapping.Path, "starting address", fmt.Sprintf("%x", executableMapping.Base))
+					executablePath := executableMapping.Path
+					/////////////////////////
+					// find if we have it in cache
+					/////////////////////////
+					elfFile, err := elf.Open(executablePath)
+					if err != nil {
+						panic("elf file failed")
+					}
+
+					buildId, err := buildid.BuildID(&buildid.ElfFile{File: elfFile, Path: executablePath})
+					if err != nil {
+						panic("build id failed")
+					}
+
+					fmt.Println("================== build id", buildId)
+
+					/////////////////////////
+					utb := unwind.NewUnwindTableBuilder(p.logger)
+					fmt.Println("msg", "finding tables for mapped executable", "path", executablePath, "starting address", fmt.Sprintf("%x", executableMapping.Base))
+					ut, minPC, maxPC, err := utb.UnwindTablesForExecutable(executablePath)
+					if err != nil {
+						// @nocommit: log error
+						continue
+					}
+
+					// @nocommit(javierhonduco): if this fails, we should clear the maps.
+					if err := p.bpfMaps.setUnwindTable(pid, executableMapping.Base, ut, procInfoBuf, minPC, maxPC); err != nil {
+						level.Warn(p.logger).Log("msg", "failed to update unwind tables", "pid", pid, "err", err)
+						continue
+					}
+					unwindTableCache.Put(pid, struct{}{})
 				}
-				unwindTableCache.Put(pid, struct{}{})
+
+				// Update process info mappings.
+				if err := p.bpfMaps.processInfo.Update(unsafe.Pointer(&pid), unsafe.Pointer(&procInfoBuf.Bytes()[0])); err != nil {
+					panic(fmt.Errorf("update unwind tables: %w", err))
+				}
 			}
+
 		}
 	}
 }
@@ -486,21 +541,20 @@ func (p *CPU) report(lastError error, processLastErrors map[int]error) {
 	p.processLastErrors = processLastErrors
 }
 
-type (
+type stackCountKey struct {
 	// stackCountKey mirrors the struct in BPF program.
 	// NOTICE: The memory layout and alignment of the struct currently matches the struct in BPF program.
 	// However, keep in mind that Go compiler injects padding to align the struct fields to be a multiple of 8 bytes.
 	// The Go spec says the address of a struct’s fields must be naturally aligned.
 	// https://dave.cheney.net/2015/10/09/padding-is-hard
 	// TODO(https://github.com/parca-dev/parca-agent/issues/207)
-	stackCountKey struct {
-		PID              int32
-		TGID             int32
-		UserStackID      int32
-		KernelStackID    int32
-		UserStackIDDWARF int32
-	}
-)
+
+	PID              int32
+	TGID             int32
+	UserStackID      int32
+	KernelStackID    int32
+	UserStackIDDWARF int32
+}
 
 func (s *stackCountKey) walkedWithDwarf() bool {
 	return s.UserStackIDDWARF != 0
