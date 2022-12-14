@@ -36,8 +36,8 @@
 // 2^20 can bisect ~1_048_576 entries.
 #define MAX_BINARY_SEARCH_DEPTH 20
 // Size of the unwind table.
-#define MAX_UNWIND_TABLE_SIZE 250 * 1000
-#define MAX_SHARDS 6
+#define MAX_UNWIND_TABLE_SIZE 100 * 1000
+#define MAX_SHARDS 15
 #define MAX_MAPS_PER_PROCESS 120 // @nocommit improve
 // Values for dwarf expressions.
 #define DWARF_EXPRESSION_UNKNOWN 0
@@ -126,7 +126,8 @@ typedef struct mapping {
   u64 begin;
   u64 end;
   int table_id;
-  int shard_count;
+  int shard_count; // @nocommit: unused atm.
+  //int type; // TODO: use -> jit vs non jit
 } mapping_t;
 
 typedef struct {
@@ -397,13 +398,7 @@ find_unwind_table(pid_t pid, u64 pc, u64 *offset) {
     bpf_printk("[error] should never happen");
     return NULL;
   }
-  /* old
-    for (int i = 0; i < MAX_SHARDS; i++) {
-      key.shard = i;
-      stack_unwind_table_t *shard = bpf_map_lookup_elem(&unwind_tables, &key);
-      if (shard) {
-        if (shard->low_pc <= pc && pc <= shard->high_pc) {
-          bpf_printk("\t Shard %d", i); */
+
   int table_id = 0;
   bool found = false;
   u64 load_address = 0;
@@ -447,7 +442,7 @@ find_unwind_table(pid_t pid, u64 pc, u64 *offset) {
   bpf_printk("~checking shards now");
 
   unwind_tables_key_t key = {.table_id = table_id, .shard = 0};
-  for (int i = 0; i < 10; i++) {
+  for (int i = 0; i < MAX_SHARDS; i++) {
     key.shard = i;
     bpf_printk("checking table=%d shard=%d", table_id, i);
     stack_unwind_table_t *shard = bpf_map_lookup_elem(&unwind_tables, &key);

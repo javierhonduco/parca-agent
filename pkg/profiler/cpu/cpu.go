@@ -34,7 +34,6 @@ import (
 	bpf "github.com/aquasecurity/libbpfgo"
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
-	"github.com/goburrow/cache"
 	"github.com/google/pprof/profile"
 	"github.com/hashicorp/go-multierror"
 
@@ -399,17 +398,17 @@ func (p *CPU) Run(ctx context.Context) error {
 }
 
 func (p *CPU) watchProcesses(ctx context.Context, pfs procfs.FS, matchers []*regexp.Regexp) {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-	unwindTableCache := cache.New(cache.WithExpireAfterWrite(10 * time.Minute))
+	/* ticker := time.NewTicker(20 * time.Minute)
+	defer ticker.Stop() */
+	//unwindTableCache := cache.New(cache.WithExpireAfterWrite(10 * time.Minute))
 
 	for {
-		select {
+		/* select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		}
-
+		*/
 		procs, err := pfs.AllProcs()
 		if err != nil {
 			level.Error(p.logger).Log("msg", "failed to list processes", "err", err)
@@ -452,29 +451,11 @@ func (p *CPU) watchProcesses(ctx context.Context, pfs procfs.FS, matchers []*reg
 
 		// Can only be enabled when a debug process name is specified.
 		if p.enableDWARFUnwinding {
-			/* 			// Update unwind tables for the given pids.
-			   			for _, pid := range pids {
-			   				level.Info(p.logger).Log("msg", "adding unwind tables", "pid", pid)
-
-			   				executableMappings, err := p.unwindTableBuilder.ExecutableMappingsForPid(pid)
-			   				if err != nil {
-			   					level.Warn(p.logger).Log("msg", "failed to build unwind table", "pid", pid, "err", err)
-			   					continue
-			   				}
-
-			   				procInfoBuf := new(bytes.Buffer)
-
-			   				// .len;
-			   				if err := binary.Write(procInfoBuf, p.bpfMaps.byteOrder, uint64(len(executableMappings))); err != nil { // @nocommit
-			   					panic(fmt.Errorf("write RBP offset bytes: %w", err))
-			   				}
-			   			} */
-
 			// Update unwind tables for the given pids.
 			for _, pid := range pids {
-				if _, exists := unwindTableCache.GetIfPresent(pid); exists {
+				/* if _, exists := unwindTableCache.GetIfPresent(pid); exists {
 					continue
-				}
+				} */
 				level.Info(p.logger).Log("msg", "adding unwind tables", "pid", pid)
 				procInfoBuf := new(bytes.Buffer)
 
@@ -490,6 +471,8 @@ func (p *CPU) watchProcesses(ctx context.Context, pfs procfs.FS, matchers []*reg
 					/////////////////////////
 					// find if we have it in cache
 					/////////////////////////
+
+					// Add detection of go binaries?
 					elfFile, err := elf.Open(executablePath)
 					if err != nil {
 						panic("elf file failed")
@@ -500,23 +483,62 @@ func (p *CPU) watchProcesses(ctx context.Context, pfs procfs.FS, matchers []*reg
 						panic("build id failed")
 					}
 
-					fmt.Println("================== build id", buildId)
-
-					/////////////////////////
+					known, tableID := p.bpfMaps.KnownUnwindTable(buildId)
+					baseAddress := executableMapping.Base
+					//// @nocommit we are re-building the table all the time
+					// this is just a temp hack but we can just get the addresses from /maps.
 					utb := unwind.NewUnwindTableBuilder(p.logger)
 					fmt.Println("msg", "finding tables for mapped executable", "path", executablePath, "starting address", fmt.Sprintf("%x", executableMapping.Base))
 					ut, minPC, maxPC, err := utb.UnwindTablesForExecutable(executablePath)
 					if err != nil {
-						// @nocommit: log error
-						continue
+						if strings.Contains(err.Error(), "found zero FDEs") {
+							continue
+						}
+						if strings.Contains(err.Error(), "failed to find .eh_frame section") {
+							continue
+						}
+
+						panic(err)
+					}
+					if known {
+						fmt.Println("======== [CACHED] build id", buildId)
+					} else {
+						fmt.Println("======== [:(((((] build id", buildId)
+						// @nocommit(javierhonduco): if this fails, we should clear the maps.
+						tableID, err = p.bpfMaps.setUnwindTable(pid, ut, minPC, maxPC, buildId)
+						if err != nil {
+							level.Warn(p.logger).Log("msg", "failed to update unwind tables", "pid", pid, "err", err)
+							continue
+						}
 					}
 
-					// @nocommit(javierhonduco): if this fails, we should clear the maps.
-					if err := p.bpfMaps.setUnwindTable(pid, executableMapping.Base, ut, procInfoBuf, minPC, maxPC); err != nil {
-						level.Warn(p.logger).Log("msg", "failed to update unwind tables", "pid", pid, "err", err)
-						continue
+					// Add process mappings
+					// .load_address;
+					if err := binary.Write(procInfoBuf, byteorder.GetHostByteOrder(), baseAddress); err != nil {
+						panic(fmt.Errorf("write RBP offset bytes: %w", err))
 					}
-					unwindTableCache.Put(pid, struct{}{})
+					// .begin
+					if err := binary.Write(procInfoBuf, byteorder.GetHostByteOrder(), minPC+baseAddress); err != nil {
+						panic(fmt.Errorf("write RBP offset bytes: %w", err))
+					}
+					// .end
+					if err := binary.Write(procInfoBuf, byteorder.GetHostByteOrder(), maxPC+baseAddress); err != nil {
+						panic(fmt.Errorf("write RBP offset bytes: %w", err))
+					}
+					// .table_id
+					if err := binary.Write(procInfoBuf, byteorder.GetHostByteOrder(), int32(tableID)); err != nil {
+						panic(fmt.Errorf("write RBP offset bytes: %w", err))
+					}
+					// .shard_count @nocommit: unused atm
+					if err := binary.Write(procInfoBuf, byteorder.GetHostByteOrder(), int32(0)); err != nil {
+						panic(fmt.Errorf("write RBP offset bytes: %w", err))
+					}
+					/* 	// .type @nocommit:
+					if err := binary.Write(procInfoBuf, byteorder.GetHostByteOrder(), int32(0)); err != nil {
+						panic(fmt.Errorf("write RBP offset bytes: %w", err))
+					}
+					*/
+					//unwindTableCache.Put(pid, struct{}{})
 				}
 
 				// Update process info mappings.
@@ -526,6 +548,7 @@ func (p *CPU) watchProcesses(ctx context.Context, pfs procfs.FS, matchers []*reg
 			}
 
 		}
+		return
 	}
 }
 
