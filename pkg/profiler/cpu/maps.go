@@ -316,8 +316,51 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 
 	fmt.Println("=> setUnwindTable called")
 
+	////////////////
+
+	// Memory mappings
+	fullExecutablePath := path.Join(fmt.Sprintf("/proc/%d/root", pid), mapping.Executable)
+	aslrElegible, err := executable.IsASLRElegible(fullExecutablePath)
+	if err != nil {
+		return fmt.Errorf("ASLR check failed with with: %w", err)
+	}
+	adjustedLoadAddress := uint64(0)
+	if mapping.MainObject() {
+		fmt.Println("!!!!!!! main object", mapping)
+		if aslrElegible {
+			adjustedLoadAddress = mapping.LoadAddr
+		}
+	} else {
+		adjustedLoadAddress = mapping.LoadAddr
+	}
+
+	fmt.Println("=> adding memory mappings in table", tableID)
+
+	// .load_address
+	if err := binary.Write(procInfoBuf, m.byteOrder, adjustedLoadAddress); err != nil {
+		return fmt.Errorf("write RBP offset bytes: %w", err)
+	}
+
+	// .begin
+	if err := binary.Write(procInfoBuf, m.byteOrder, minCoveredPc+adjustedLoadAddress); err != nil {
+		return fmt.Errorf("write RBP offset bytes: %w", err)
+	}
+	// .end
+	if err := binary.Write(procInfoBuf, m.byteOrder, maxCoveredPc+adjustedLoadAddress); err != nil {
+		return fmt.Errorf("write RBP offset bytes: %w", err)
+	}
+	// .table_id
+	if err := binary.Write(procInfoBuf, m.byteOrder, int32(tableID)); err != nil {
+		return fmt.Errorf("write RBP offset bytes: %w", err)
+	}
+	// .shard_count @nocommit
+	if err := binary.Write(procInfoBuf, m.byteOrder, int32(0)); err != nil {
+		return fmt.Errorf("write RBP offset bytes: %w", err)
+	}
+
+	/////////////////
+
 	// Range-partition the unwind table in the different shards.
-	//lastShardIndex := len(ut) / maxUnwindTableSize
 	shardIndex := 0
 	for i := 0; i < len(ut); i += maxUnwindTableSize {
 		upTo := i + maxUnwindTableSize
@@ -328,24 +371,12 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 		chunk := ut[i:upTo]
 
 		// Write `.low_pc`
-		/* 		var lowPC uint64
-		   		if shardIndex == 0 {
-		   			lowPC = minCoveredPc
-		   		} else {
-		   			//lowPC = chunk[0].Pc()
-		   		} */
 		fmt.Println("======== executable", mapping.Executable, "low pc", fmt.Sprintf("%x", minCoveredPc), "high pc", fmt.Sprintf("%x", maxCoveredPc)) // @nocommit: remove
 
 		if err := binary.Write(buf, m.byteOrder, minCoveredPc); err != nil {
 			return fmt.Errorf("write the number of rows: %w", err)
 		}
 		// Write `.high_pc`.
-		/* 		var highPC uint64
-		   		if shardIndex == lastShardIndex {
-		   			highPC = maxCoveredPc
-		   		} else {
-		   			//highPC = chunk[len(chunk)-1].Pc()
-		   		} */
 		if err := binary.Write(buf, m.byteOrder, maxCoveredPc); err != nil {
 			return fmt.Errorf("write the number of rows: %w", err)
 		}
@@ -359,10 +390,10 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 		}
 
 		for _, row := range chunk {
-			/* if err := binary.Write(buf, m.byteOrder, row); err != nil {
+			if err := binary.Write(buf, m.byteOrder, row); err != nil {
 				panic(fmt.Errorf("write row: %w", err))
-			} */
-			if err := binary.Write(buf, m.byteOrder, row.Pc()); err != nil {
+			}
+			/* 	if err := binary.Write(buf, m.byteOrder, row.Pc()); err != nil {
 				panic(fmt.Errorf("write row: %w", err))
 			}
 			if err := binary.Write(buf, m.byteOrder, uint16(0)); err != nil {
@@ -379,11 +410,12 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 			}
 			if err := binary.Write(buf, m.byteOrder, row.RbpOffset()); err != nil {
 				panic(fmt.Errorf("write row: %w", err))
-			}
+			} */
 		}
 
 		// Set (table ID, shard ID) -> unwind table for each shard.
 		keyBuf := new(bytes.Buffer)
+		fmt.Println("============= table id", tableID, "mapping", mapping.Executable)
 		if err := binary.Write(keyBuf, m.byteOrder, int32(tableID)); err != nil {
 			return fmt.Errorf("write RBP offset bytes: %w", err)
 		}
@@ -394,50 +426,10 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 		if err := m.unwindTables.Update(unsafe.Pointer(&keyBuf.Bytes()[0]), unsafe.Pointer(&buf.Bytes()[0])); err != nil {
 			return fmt.Errorf("update unwind tables: %w", err)
 		}
+
 		tableID++
 		shardIndex++
 		buf.Reset()
-	}
-
-	// Memory mappings
-	fullExecutablePath := path.Join(fmt.Sprintf("/proc/%d/root", pid), mapping.Executable)
-	aslrElegible, err := executable.IsASLRElegible(fullExecutablePath)
-	if err != nil {
-		return fmt.Errorf("ASLR check failed with with: %w", err)
-	}
-	var LoadAddr uint64
-	if mapping.MainObject() {
-		fmt.Println("!!!!!!! main object", mapping)
-		if aslrElegible {
-			LoadAddr = mapping.LoadAddr
-		}
-	} else {
-		LoadAddr = mapping.LoadAddr
-
-	}
-
-	fmt.Println("=> adding memory mappings", tableID)
-
-	// .load_address
-	if err := binary.Write(procInfoBuf, m.byteOrder, LoadAddr); err != nil {
-		return fmt.Errorf("write RBP offset bytes: %w", err)
-	}
-
-	// .begin
-	if err := binary.Write(procInfoBuf, m.byteOrder, minCoveredPc+mapping.LoadAddr); err != nil {
-		return fmt.Errorf("write RBP offset bytes: %w", err)
-	}
-	// .end
-	if err := binary.Write(procInfoBuf, m.byteOrder, maxCoveredPc+mapping.LoadAddr); err != nil {
-		return fmt.Errorf("write RBP offset bytes: %w", err)
-	}
-	// .table_id
-	if err := binary.Write(procInfoBuf, m.byteOrder, int32(tableID)); err != nil {
-		return fmt.Errorf("write RBP offset bytes: %w", err)
-	}
-	// .shard_count @nocommit
-	if err := binary.Write(procInfoBuf, m.byteOrder, int32(0)); err != nil {
-		return fmt.Errorf("write RBP offset bytes: %w", err)
 	}
 
 	return nil

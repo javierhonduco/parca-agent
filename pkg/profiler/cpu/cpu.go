@@ -527,8 +527,7 @@ func (p *CPU) addUnwindTableForProcessMapping(pid int, executableMapping *unwind
 
 	// 2. Build unwind table
 	unwindTable := unwind.BuildUnwindTable(fdes) // @nocommit: intermediate step
-	// 2.5 Sort @nocommit: perhaps sorting the BPF friendly one will be faster
-	sort.Sort(unwindTable)
+	sort.Sort(unwindTable)                       // 2.5 Sort @nocommit: perhaps sorting the BPF friendly one will be faster
 	// 3. Get the compact, BPF-friendly representation
 	compactUnwindTable := unwind.CompactUnwindTableRepresentation(unwindTable)
 	// now we have a full compact unwind table that we have to split in different BPF maps.
