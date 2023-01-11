@@ -28,7 +28,11 @@ type ExecutableMapping struct {
 	mainExec   bool
 }
 
-// @nocommit: improve
+// MainObject returns whether this executable is the "main object".
+// which triggered the loading of all the other mappings.
+//
+// We care about this because if Linux ASLR is enabled, we have to
+// modify the loaded addresses for the main object.
 func (pm *ExecutableMapping) MainObject() bool {
 	return pm.mainExec
 }
@@ -43,7 +47,7 @@ func (pm *ExecutableMapping) IsJitted() bool {
 	return pm.Executable == ""
 }
 
-// isSpecial returns whether the file mapping is a "special" region,
+// IsSpecial returns whether the file mapping is a "special" region,
 // such as the mappings for vDSOs `[vdso]` and others.
 func (pm *ExecutableMapping) IsSpecial() bool {
 	return len(pm.Executable) > 0 && pm.Executable[0] == '['
