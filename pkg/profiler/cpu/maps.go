@@ -307,7 +307,7 @@ func (m *bpfMaps) clean() error {
 }
 
 // setUnwindTable updates the unwind tables with the given unwind table.
-func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping *unwind.ExecutableMapping, procInfoBuf *bytes.Buffer, minCoveredPc uint64, maxCoveredPc uint64) error {
+func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping *unwind.ExecutableMapping, procInfoBuf *bytes.Buffer, lowUnwindPc uint64, highUnwindPc uint64) error {
 	buf := new(bytes.Buffer)
 
 	if len(ut) >= maxUnwindSize {
@@ -336,17 +336,18 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 
 	fmt.Println("=> adding memory mappings in table", tableID)
 
+	// =================== MAPPINGS ===================
 	// .load_address
 	if err := binary.Write(procInfoBuf, m.byteOrder, adjustedLoadAddress); err != nil {
 		return fmt.Errorf("write RBP offset bytes: %w", err)
 	}
 
 	// .begin
-	if err := binary.Write(procInfoBuf, m.byteOrder, minCoveredPc+adjustedLoadAddress); err != nil {
+	if err := binary.Write(procInfoBuf, m.byteOrder, mapping.StartAddr); err != nil {
 		return fmt.Errorf("write RBP offset bytes: %w", err)
 	}
 	// .end
-	if err := binary.Write(procInfoBuf, m.byteOrder, maxCoveredPc+adjustedLoadAddress); err != nil {
+	if err := binary.Write(procInfoBuf, m.byteOrder, mapping.EndAddr); err != nil {
 		return fmt.Errorf("write RBP offset bytes: %w", err)
 	}
 	// .table_id
@@ -358,8 +359,7 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 		return fmt.Errorf("write RBP offset bytes: %w", err)
 	}
 
-	/////////////////
-
+	// =================== UNWIND TABLE ===================
 	// Range-partition the unwind table in the different shards.
 	shardIndex := 0
 	for i := 0; i < len(ut); i += maxUnwindTableSize {
@@ -370,14 +370,18 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 
 		chunk := ut[i:upTo]
 
-		// Write `.low_pc`
-		fmt.Println("======== executable", mapping.Executable, "low pc", fmt.Sprintf("%x", minCoveredPc), "high pc", fmt.Sprintf("%x", maxCoveredPc)) // @nocommit: remove
+		// IMPORTANT NOTE (@nocommit):
+		//
+		// 	we want these address to be realative so we can reuse them, that's why we use the min and max PCs.
 
-		if err := binary.Write(buf, m.byteOrder, minCoveredPc); err != nil {
+		// @nocommit: see if we can change this with the start and end of mappings.
+		// Write `.low_pc`
+		fmt.Println("======== executable", mapping.Executable, "low pc", fmt.Sprintf("%x", lowUnwindPc), "high pc", fmt.Sprintf("%x", highUnwindPc)) // @nocommit: remove
+		if err := binary.Write(buf, m.byteOrder, lowUnwindPc); err != nil {
 			return fmt.Errorf("write the number of rows: %w", err)
 		}
 		// Write `.high_pc`.
-		if err := binary.Write(buf, m.byteOrder, maxCoveredPc); err != nil {
+		if err := binary.Write(buf, m.byteOrder, highUnwindPc); err != nil {
 			return fmt.Errorf("write the number of rows: %w", err)
 		}
 		// Write number of rows `.table_len`.
@@ -393,6 +397,7 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 			if err := binary.Write(buf, m.byteOrder, row); err != nil {
 				panic(fmt.Errorf("write row: %w", err))
 			}
+			// @nocommit: remove below
 			/* 	if err := binary.Write(buf, m.byteOrder, row.Pc()); err != nil {
 				panic(fmt.Errorf("write row: %w", err))
 			}

@@ -399,13 +399,7 @@ find_unwind_table(pid_t pid, u64 pc, u64 *offset) {
     bpf_printk("[error] should never happen");
     return NULL;
   }
-  /* old
-    for (int i = 0; i < MAX_SHARDS; i++) {
-      key.shard = i;
-      stack_unwind_table_t *shard = bpf_map_lookup_elem(&unwind_tables, &key);
-      if (shard) {
-        if (shard->low_pc <= pc && pc <= shard->high_pc) {
-          bpf_printk("\t Shard %d", i); */
+
   int table_id = 0;
   bool found = false;
   u64 load_address = 0;
@@ -427,7 +421,7 @@ find_unwind_table(pid_t pid, u64 pc, u64 *offset) {
         pc <= proc_info->mappings[i].end) {
       table_id = proc_info->mappings[i].table_id;
       load_address = proc_info->mappings[i].load_address;
-      bpf_printk("== found a mapping i=%d table_id=%d load_address=%llx", i, table_id, load_address);
+      bpf_printk("== mapping found i=%d table_id=%d pc=%llx, begin=%llx, end=%llx", i, table_id, pc, proc_info->mappings[i].begin, proc_info->mappings[i].end);
       found = true;
       break;
     }
