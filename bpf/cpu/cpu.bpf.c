@@ -421,7 +421,7 @@ find_unwind_table(pid_t pid, u64 pc, u64 *offset) {
         pc <= proc_info->mappings[i].end) {
       table_id = proc_info->mappings[i].table_id;
       load_address = proc_info->mappings[i].load_address;
-      bpf_printk("== mapping found i=%d table_id=%d pc=%llx, begin=%llx, end=%llx", i, table_id, pc, proc_info->mappings[i].begin, proc_info->mappings[i].end);
+      // bpf_printk("== mapping found i=%d table_id=%d pc=%llx, begin=%llx, end=%llx", i, table_id, pc, proc_info->mappings[i].begin, proc_info->mappings[i].end);
       found = true;
       break;
     }
