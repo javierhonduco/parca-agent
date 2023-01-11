@@ -21,9 +21,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"path"
 	"unsafe"
 
-	"github.com/parca-dev/parca-agent/internal/dwarf/frame"
+	"github.com/parca-dev/parca-agent/pkg/executable"
 	"github.com/parca-dev/parca-agent/pkg/stack/unwind"
 
 	bpf "github.com/aquasecurity/libbpfgo"
@@ -35,6 +36,7 @@ const (
 	stackTracesMapName      = "stack_traces"
 	dwarfStackTracesMapName = "dwarf_stack_traces"
 	unwindTablesMapName     = "unwind_tables"
+	processInfoMapName      = "process_info"
 	programsMapName         = "programs"
 
 	// With the current row structure, the max items we can store is 262k per map.
@@ -44,22 +46,8 @@ const (
 	maxUnwindSize         = maxUnwindTableSize * unwindTableShardCount
 )
 
-type BpfCfaType uint16
-
-const (
-	CfaRegisterUndefined BpfCfaType = iota
-	CfaRegisterRbp
-	CfaRegisterRsp
-	CfaRegisterExpression
-)
-
-type BpfRbpType uint16
-
-const (
-	RbpRuleOffsetUnchanged BpfRbpType = iota
-	RbpRuleOffset
-	RbpRuleRegister
-	RbpRegisterExpression
+var (
+	tableID = 100
 )
 
 var (
@@ -77,6 +65,7 @@ type bpfMaps struct {
 	stackCounts      *bpf.BPFMap
 	stackTraces      *bpf.BPFMap
 	dwarfStackTraces *bpf.BPFMap
+	processInfo      *bpf.BPFMap
 
 	unwindTables *bpf.BPFMap
 	programs     *bpf.BPFMap
@@ -142,11 +131,18 @@ func (m *bpfMaps) create() error {
 		return fmt.Errorf("get dwarf stack traces map: %w", err)
 	}
 
+	processInfo, err := m.module.GetMap(processInfoMapName)
+	if err != nil {
+		return fmt.Errorf("get process info map: %w", err)
+	}
+
 	m.debugPIDs = debugPIDs
 	m.stackCounts = stackCounts
 	m.stackTraces = stackTraces
 	m.unwindTables = unwindTables
 	m.dwarfStackTraces = dwarfStackTraces
+	m.processInfo = processInfo
+
 	return nil
 }
 
@@ -311,14 +307,17 @@ func (m *bpfMaps) clean() error {
 }
 
 // setUnwindTable updates the unwind tables with the given unwind table.
-func (m *bpfMaps) setUnwindTable(pid int, ut unwind.UnwindTable) error {
+func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping *unwind.ExecutableMapping, procInfoBuf *bytes.Buffer, minCoveredPc uint64, maxCoveredPc uint64) error {
 	buf := new(bytes.Buffer)
 
 	if len(ut) >= maxUnwindSize {
 		return fmt.Errorf("maximum unwind table size reached. Table size %d, but max size is %d", len(ut), maxUnwindSize)
 	}
 
+	fmt.Println("=> setUnwindTable called")
+
 	// Range-partition the unwind table in the different shards.
+	//lastShardIndex := len(ut) / maxUnwindTableSize
 	shardIndex := 0
 	for i := 0; i < len(ut); i += maxUnwindTableSize {
 		upTo := i + maxUnwindTableSize
@@ -329,93 +328,63 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.UnwindTable) error {
 		chunk := ut[i:upTo]
 
 		// Write `.low_pc`
-		if err := binary.Write(buf, m.byteOrder, chunk[0].Loc); err != nil {
+		/* 		var lowPC uint64
+		   		if shardIndex == 0 {
+		   			lowPC = minCoveredPc
+		   		} else {
+		   			//lowPC = chunk[0].Pc()
+		   		} */
+		fmt.Println("======== executable", mapping.Executable, "low pc", fmt.Sprintf("%x", minCoveredPc), "high pc", fmt.Sprintf("%x", maxCoveredPc)) // @nocommit: remove
+
+		if err := binary.Write(buf, m.byteOrder, minCoveredPc); err != nil {
 			return fmt.Errorf("write the number of rows: %w", err)
 		}
 		// Write `.high_pc`.
-		if err := binary.Write(buf, m.byteOrder, chunk[len(chunk)-1].Loc); err != nil {
+		/* 		var highPC uint64
+		   		if shardIndex == lastShardIndex {
+		   			highPC = maxCoveredPc
+		   		} else {
+		   			//highPC = chunk[len(chunk)-1].Pc()
+		   		} */
+		if err := binary.Write(buf, m.byteOrder, maxCoveredPc); err != nil {
 			return fmt.Errorf("write the number of rows: %w", err)
 		}
 		// Write number of rows `.table_len`.
 		if err := binary.Write(buf, m.byteOrder, uint64(len(chunk))); err != nil {
 			return fmt.Errorf("write the number of rows: %w", err)
 		}
-		// Write padding.
+		// Write `.__explicit_padding`.
 		if err := binary.Write(buf, m.byteOrder, uint64(0)); err != nil {
 			return fmt.Errorf("write the number of rows: %w", err)
 		}
+
 		for _, row := range chunk {
-			// Right now we only support x86_64, where the return address position
-			// is specified in the ABI, so we don't write it.
-
-			// Write Program Counter (PC).
-			if err := binary.Write(buf, m.byteOrder, row.Loc); err != nil {
-				return fmt.Errorf("write the program counter: %w", err)
+			/* if err := binary.Write(buf, m.byteOrder, row); err != nil {
+				panic(fmt.Errorf("write row: %w", err))
+			} */
+			if err := binary.Write(buf, m.byteOrder, row.Pc()); err != nil {
+				panic(fmt.Errorf("write row: %w", err))
 			}
-
-			// Write __reserved_do_not_use.
 			if err := binary.Write(buf, m.byteOrder, uint16(0)); err != nil {
-				return fmt.Errorf("write CFA register bytes: %w", err)
+				panic(fmt.Errorf("write row: %w", err))
 			}
-
-			var CfaRegister uint8
-			var RbpRegister uint8
-			var CfaOffset int16
-			var RbpOffset int16
-
-			// CFA.
-			switch row.CFA.Rule {
-			case frame.RuleCFA:
-				if row.CFA.Reg == frame.X86_64FramePointer {
-					CfaRegister = uint8(CfaRegisterRbp)
-				} else if row.CFA.Reg == frame.X86_64StackPointer {
-					CfaRegister = uint8(CfaRegisterRsp)
-				}
-				CfaOffset = int16(row.CFA.Offset)
-			case frame.RuleExpression:
-				CfaRegister = uint8(CfaRegisterExpression)
-				CfaOffset = int16(unwind.ExpressionIdentifier(row.CFA.Expression))
-
-			default:
-				return fmt.Errorf("CFA rule is not valid. This should never happen")
+			if err := binary.Write(buf, m.byteOrder, row.CfaType()); err != nil {
+				panic(fmt.Errorf("write row: %w", err))
 			}
-
-			// Frame pointer.
-			switch row.RBP.Rule {
-			case frame.RuleUndefined:
-			case frame.RuleOffset:
-				RbpRegister = uint8(RbpRuleOffset)
-				RbpOffset = int16(row.RBP.Offset)
-			case frame.RuleRegister:
-				RbpRegister = uint8(RbpRuleRegister)
-			case frame.RuleExpression:
-				RbpRegister = uint8(RbpRegisterExpression)
+			if err := binary.Write(buf, m.byteOrder, row.RbpType()); err != nil {
+				panic(fmt.Errorf("write row: %w", err))
 			}
-
-			// Write CFA type (.cfa_type).
-			if err := binary.Write(buf, m.byteOrder, CfaRegister); err != nil {
-				return fmt.Errorf("write CFA register bytes: %w", err)
+			if err := binary.Write(buf, m.byteOrder, row.CfaOffset()); err != nil {
+				panic(fmt.Errorf("write row: %w", err))
 			}
-
-			// Write frame pointer type (.rbp_type).
-			if err := binary.Write(buf, m.byteOrder, RbpRegister); err != nil {
-				return fmt.Errorf("write CFA register bytes: %w", err)
-			}
-
-			// Write CFA offset (.cfa_offset).
-			if err := binary.Write(buf, m.byteOrder, CfaOffset); err != nil {
-				return fmt.Errorf("write CFA offset bytes: %w", err)
-			}
-
-			// Write frame pointer offset (.rbp_offset).
-			if err := binary.Write(buf, m.byteOrder, RbpOffset); err != nil {
-				return fmt.Errorf("write RBP offset bytes: %w", err)
+			if err := binary.Write(buf, m.byteOrder, row.RbpOffset()); err != nil {
+				panic(fmt.Errorf("write row: %w", err))
 			}
 		}
 
-		// Set (PID, shard ID) -> unwind table for each shard.
+		// Set (table ID, shard ID) -> unwind table for each shard.
 		keyBuf := new(bytes.Buffer)
-		if err := binary.Write(keyBuf, m.byteOrder, int32(pid)); err != nil {
+		if err := binary.Write(keyBuf, m.byteOrder, int32(tableID)); err != nil {
 			return fmt.Errorf("write RBP offset bytes: %w", err)
 		}
 		if err := binary.Write(keyBuf, m.byteOrder, int32(shardIndex)); err != nil {
@@ -425,32 +394,51 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.UnwindTable) error {
 		if err := m.unwindTables.Update(unsafe.Pointer(&keyBuf.Bytes()[0]), unsafe.Pointer(&buf.Bytes()[0])); err != nil {
 			return fmt.Errorf("update unwind tables: %w", err)
 		}
+		tableID++
 		shardIndex++
 		buf.Reset()
 	}
 
-	// HACK(javierhonduco): remove this.
-	// Debug stuff to compare this with the BPF program's view of the world.
-	/* printRow := func(w io.Writer, pt unwind.UnwindTable, index int) {
-		cfaInfo := ""
-		switch ut[index].CFA.Rule {
-		case frame.RuleCFA:
-			cfaInfo = fmt.Sprintf("CFA Reg: %d Offset:%d", ut[index].CFA.Reg, ut[index].CFA.Offset)
-		case frame.RuleExpression:
-			cfaInfo = "CFA exp"
-		default:
-			panic("CFA rule is not valid. This should never happen.")
+	// Memory mappings
+	fullExecutablePath := path.Join(fmt.Sprintf("/proc/%d/root", pid), mapping.Executable)
+	aslrElegible, err := executable.IsASLRElegible(fullExecutablePath)
+	if err != nil {
+		return fmt.Errorf("ASLR check failed with with: %w", err)
+	}
+	var LoadAddr uint64
+	if mapping.MainObject() {
+		fmt.Println("!!!!!!! main object", mapping)
+		if aslrElegible {
+			LoadAddr = mapping.LoadAddr
 		}
+	} else {
+		LoadAddr = mapping.LoadAddr
 
-		fmt.Fprintf(w, "\trow[%d]. Loc: %x, %s, $rbp: %d\n", index, pt[index].Loc, cfaInfo, pt[index].RBP.Offset)
 	}
 
-	fmt.Fprintf(os.Stdout, "\t- Total entries %d\n\n", len(ut))
-	printRow(os.Stdout, ut, 0)
-	printRow(os.Stdout, ut, 1)
-	printRow(os.Stdout, ut, 2)
-	printRow(os.Stdout, ut, 6)
-	printRow(os.Stdout, ut, len(ut)-1) */
+	fmt.Println("=> adding memory mappings", tableID)
+
+	// .load_address
+	if err := binary.Write(procInfoBuf, m.byteOrder, LoadAddr); err != nil {
+		return fmt.Errorf("write RBP offset bytes: %w", err)
+	}
+
+	// .begin
+	if err := binary.Write(procInfoBuf, m.byteOrder, minCoveredPc+mapping.LoadAddr); err != nil {
+		return fmt.Errorf("write RBP offset bytes: %w", err)
+	}
+	// .end
+	if err := binary.Write(procInfoBuf, m.byteOrder, maxCoveredPc+mapping.LoadAddr); err != nil {
+		return fmt.Errorf("write RBP offset bytes: %w", err)
+	}
+	// .table_id
+	if err := binary.Write(procInfoBuf, m.byteOrder, int32(tableID)); err != nil {
+		return fmt.Errorf("write RBP offset bytes: %w", err)
+	}
+	// .shard_count @nocommit
+	if err := binary.Write(procInfoBuf, m.byteOrder, int32(0)); err != nil {
+		return fmt.Errorf("write RBP offset bytes: %w", err)
+	}
 
 	return nil
 }

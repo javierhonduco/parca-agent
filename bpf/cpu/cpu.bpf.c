@@ -29,12 +29,16 @@
 #define MAX_STACK_TRACES 1024
 // Number of items in the stack counts aggregation map.
 #define MAX_STACK_COUNTS_ENTRIES 10240
+// Size of the `<(pid, shard_id), unwind_table>` mapping. Determines how many <=
+// @nocommit change processes we can unwind.
+#define MAX_PID_MAP_SIZE 500 // @nocommit change this
 // Binary search iterations for dwarf based stack walking.
 // 2^20 can bisect ~1_048_576 entries.
 #define MAX_BINARY_SEARCH_DEPTH 20
 // Size of the unwind table.
 #define MAX_UNWIND_TABLE_SIZE 250 * 1000
-#define MAX_SHARDS 6
+#define MAX_SHARDS 15
+#define MAX_MAPS_PER_PROCESS 120 // @nocommit improve
 
 // Values for dwarf expressions.
 #define DWARF_EXPRESSION_UNKNOWN 0
@@ -114,9 +118,23 @@ typedef struct stack_count_key {
 } stack_count_key_t;
 
 typedef struct unwind_tables_key {
-  int pid;
+  int table_id;
   int shard;
 } unwind_tables_key_t;
+
+typedef struct mapping {
+  u64 load_address;
+  u64 begin;
+  u64 end;
+  int table_id;
+  int shard_count;
+  //int type; // TODO: use -> jit vs non jit
+} mapping_t;
+
+typedef struct {
+  u64 len;
+  mapping_t mappings[MAX_MAPS_PER_PROCESS];
+} process_info_t;
 
 typedef struct unwind_state {
   u64 ip;
@@ -148,7 +166,7 @@ typedef struct stack_unwind_row {
 } stack_unwind_row_t;
 
 // Unwinding table representation.
-typedef struct stack_unwind_table_t {
+typedef struct stack_unwind_table {
   u64 low_pc;
   u64 high_pc;
   u64 table_len; // items of the table, as the max size is static.
@@ -182,6 +200,7 @@ BPF_STACK_TRACE(stack_traces, MAX_STACK_TRACES);
 BPF_HASH(dwarf_stack_traces, int, stack_trace_t, MAX_STACK_TRACES);
 BPF_HASH(unwind_tables, unwind_tables_key_t, stack_unwind_table_t,
          2); // Table size will be updated in userspace.
+BPF_HASH(process_info, int, process_info_t, MAX_PID_MAP_SIZE);
 
 struct {
   __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -354,10 +373,8 @@ static __always_inline void show_row(stack_unwind_table_t *unwind_table,
 // Finds whether a process should be unwound using the unwind
 // tables.
 static __always_inline bool has_unwind_information(pid_t pid) {
-  unwind_tables_key_t key = {.pid = pid, .shard = 0};
-
-  stack_unwind_table_t *shard1 = bpf_map_lookup_elem(&unwind_tables, &key);
-  if (shard1) {
+  process_info_t *proc_info = bpf_map_lookup_elem(&process_info, &pid);
+  if (proc_info) {
     return true;
   }
   return false;
@@ -375,24 +392,86 @@ static __always_inline bool is_debug_enabled_for_pid(int pid) {
 // Returns NULL if it can't be found, so this function can't be used to detect
 // how should we unwind the native stack for a process. See
 // `has_unwind_information()`.
-static __always_inline stack_unwind_table_t *find_unwind_table(pid_t pid,
-                                                               u64 pc) {
-  unwind_tables_key_t key = {.pid = pid, .shard = 0};
+static __always_inline stack_unwind_table_t *
+find_unwind_table(pid_t pid, u64 pc, u64 *offset) {
+  process_info_t *proc_info = bpf_map_lookup_elem(&process_info, &pid);
+  if (proc_info == NULL) {
+    bpf_printk("[error] should never happen");
+    return NULL;
+  }
+  /* old
+    for (int i = 0; i < MAX_SHARDS; i++) {
+      key.shard = i;
+      stack_unwind_table_t *shard = bpf_map_lookup_elem(&unwind_tables, &key);
+      if (shard) {
+        if (shard->low_pc <= pc && pc <= shard->high_pc) {
+          bpf_printk("\t Shard %d", i); */
+  int table_id = 0;
+  bool found = false;
+  u64 load_address = 0;
 
+  // Find the mapping.
+  for (int i = 0; i < MAX_MAPS_PER_PROCESS; i++) {
+    if (i > proc_info->len) {
+      return NULL;
+    }
+    if (i < 0 || i > MAX_MAPS_PER_PROCESS) {
+      bpf_printk("[error] should never happen, verifier");
+      return NULL;
+    }
+
+    // too verbose
+    // bpf_printk("checking mapping i=%d pc=%llx begin=%llx end=%llx", i, pc,
+    // proc_info->mappings[i].begin, proc_info->mappings[i].end);
+    if (proc_info->mappings[i].begin <= pc &&
+        pc <= proc_info->mappings[i].end) {
+      table_id = proc_info->mappings[i].table_id;
+      load_address = proc_info->mappings[i].load_address;
+      bpf_printk("== found at mapping i=%d table_id=%d load_address=%llx", i, table_id, load_address);
+      found = true;
+      break;
+    }
+  }
+
+  if (found) {
+    if (offset != NULL) {
+      *offset = load_address;
+    }
+  } else {
+    bpf_printk("[warn] :((( no mapping for ip=%llx", pc);
+    return NULL;
+  }
+
+  // undefined behaviour??
+  // u64 adjusted_pc = pc - *offset;
+  // u64 adjusted_pc = pc - load_address;
+  bpf_printk("~about to check shards found=%d", found);
+  bpf_printk("~checking shards now");
+
+  unwind_tables_key_t key = {.table_id = table_id, .shard = 0};
   for (int i = 0; i < MAX_SHARDS; i++) {
     key.shard = i;
+    bpf_printk("checking table=%d shard=%d", table_id, i);
     stack_unwind_table_t *shard = bpf_map_lookup_elem(&unwind_tables, &key);
     if (shard) {
-      if (shard->low_pc <= pc && pc <= shard->high_pc) {
-        bpf_printk("\t Shard %d", i);
+      bpf_printk("!!! found a shard, checking pc=%llx low=%llx high=%llx", pc -  load_address ,
+                 shard->low_pc, shard->high_pc);
+      /*  undefined behaviour?
+      bpf_printk("checking shard... %llx-%d low %llx high %llx", pc, *offset,
+                  shard->low_pc, shard->high_pc); */
+      if (shard->low_pc <= pc - load_address &&
+          pc - load_address <= shard->high_pc) {
+        bpf_printk("\t Shard %d", 0);
         return shard;
       }
     }
   }
 
-  bpf_printk("[warn] no unwind table contains PC=%llx", pc);
+  // old bpf_printk("[warn] no unwind table contains PC=%llx", pc);
+  bpf_printk("[error] could not find the right shard...");
   return NULL;
 }
+
 
 static __always_inline void add_stacks(struct bpf_perf_event_data *ctx,
                                        u64 pid_tgid,
@@ -467,15 +546,17 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
     bpf_printk("\tcurrent sp: %llx", unwind_state->sp);
     bpf_printk("\tcurrent bp: %llx", unwind_state->bp);
 
+    u64 offset = 0;
     stack_unwind_table_t *unwind_table =
-        find_unwind_table(user_pid, unwind_state->ip);
+      find_unwind_table(user_pid, unwind_state->ip, &offset);
 
     if (unwind_table == NULL) {
       reached_bottom_of_stack = true;
       break;
     }
 
-    u64 table_idx = find_offset_for_pc(unwind_table, unwind_state->ip);
+    bpf_printk("le offset: %llx", offset);
+    u64 table_idx = find_offset_for_pc(unwind_table, unwind_state->ip - offset);
 
     if (table_idx == BINARY_SEARCH_NOT_FOUND ||
         table_idx == BINARY_SEARCH_SHOULD_NEVER_HAPPEN ||
@@ -485,6 +566,7 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
     }
 
     bpf_printk("\t=> table_index: %d", table_idx);
+    bpf_printk("\t=> adjusted pc: %llx", unwind_state->ip - offset);
 
     // Appease the verifier.
     if (table_idx < 0 || table_idx >= MAX_UNWIND_TABLE_SIZE) {
@@ -700,7 +782,8 @@ int profile_cpu(struct bpf_perf_event_data *ctx) {
     return 0;
 
   if (config.debug) {
-    bpf_printk("debug mode enabled, make sure you specified process name");
+    // very noisy
+    // bpf_printk("debug mode enabled, make sure you specified process name");
     if (!is_debug_enabled_for_pid(user_tgid))
       return 0;
   }
@@ -712,7 +795,7 @@ int profile_cpu(struct bpf_perf_event_data *ctx) {
     add_stacks(ctx, pid_tgid, STACK_WALKING_METHOD_FP, NULL);
   } else {
     stack_unwind_table_t *unwind_table =
-        find_unwind_table(user_pid, ctx->regs.ip);
+        find_unwind_table(user_pid, ctx->regs.ip, NULL);
     if (unwind_table == NULL) {
       bpf_printk("IP not covered. In kernel space / bug? IP %llx)",
                  ctx->regs.ip);

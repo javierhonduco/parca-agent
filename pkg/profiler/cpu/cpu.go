@@ -23,8 +23,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"path"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -400,7 +402,8 @@ func (p *CPU) watchProcesses(ctx context.Context, pfs procfs.FS, matchers []*reg
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
-	unwindTableCache := cache.New(cache.WithExpireAfterWrite(20 * time.Minute))
+	// @nocommit: cache on start_at
+	unwindTableCache := cache.New()
 
 	for {
 		select {
@@ -458,20 +461,85 @@ func (p *CPU) watchProcesses(ctx context.Context, pfs procfs.FS, matchers []*reg
 				}
 				level.Info(p.logger).Log("msg", "adding unwind tables", "pid", pid)
 
-				pt, err := p.unwindTableBuilder.UnwindTableForPid(pid)
+				// @nocommit: refactor
+				err := p.addUnwindTableForPid(pid)
 				if err != nil {
-					level.Warn(p.logger).Log("msg", "failed to build unwind table", "pid", pid, "err", err)
+					level.Error(p.logger).Log("msg", "failed to add unwind table", "pid", pid, "err", err)
 					continue
 				}
 
-				if err := p.bpfMaps.setUnwindTable(pid, pt); err != nil {
-					level.Warn(p.logger).Log("msg", "failed to update unwind tables", "pid", pid, "err", err)
-					continue
-				}
 				unwindTableCache.Put(pid, struct{}{})
 			}
 		}
 	}
+}
+
+// 1. Find executable sections
+// 2. For each section, generate compact table
+// 3. Add table to maps
+// 4. Add map metadata to process
+//
+// @nocommit: later on, table caching
+func (p *CPU) addUnwindTableForPid(pid int) error {
+	proc, err := procfs.NewProc(pid)
+	if err != nil {
+		return err
+	}
+
+	mappings, err := proc.ProcMaps()
+	if err != nil {
+		return err
+	}
+
+	executableMappings := unwind.ExecutableMappings(mappings)
+	procInfoBuf := new(bytes.Buffer)
+	// Important: this has to be called before addUnwindTableForProcessMapping
+	// .len
+	if err := binary.Write(procInfoBuf, p.bpfMaps.byteOrder, uint64(len(executableMappings))); err != nil { // @nocommit
+		panic(fmt.Errorf("write RBP offset bytes: %w", err))
+	}
+
+	for _, executableMapping := range executableMappings {
+		// @nocommit: handle error
+		_ = p.addUnwindTableForProcessMapping(pid, executableMapping, procInfoBuf)
+	}
+
+	if err := p.bpfMaps.processInfo.Update(unsafe.Pointer(&pid), unsafe.Pointer(&procInfoBuf.Bytes()[0])); err != nil {
+		panic(fmt.Errorf("update unwind tables: %w", err))
+	}
+
+	return nil
+}
+
+func (p *CPU) addUnwindTableForProcessMapping(pid int, executableMapping *unwind.ExecutableMapping, procInfoBuf *bytes.Buffer) error {
+	fullExecutablePath := path.Join(fmt.Sprintf("/proc/%d/root", pid), executableMapping.Executable)
+	// @nocommit: here we could detect if we already know the buildID and just pass the metadata
+
+	// 1. Get FDEs
+	fdes, err := unwind.ReadFDEs(fullExecutablePath) // @nocommit: this should accept an ELF file perhaps.
+	if err != nil {
+		return err
+	}
+
+	sort.Sort(fdes) // hope this help with efficiency, too
+	minCoveredPc := fdes[0].Begin()
+	maxCoveredPc := fdes[len(fdes)-1].End()
+
+	// 2. Build unwind table
+	unwindTable := unwind.BuildUnwindTable(fdes) // @nocommit: intermediate step
+	// 2.5 Sort @nocommit: perhaps sorting the BPF friendly one will be faster
+	sort.Sort(unwindTable)
+	// 3. Get the compact, BPF-friendly representation
+	compactUnwindTable := unwind.CompactUnwindTableRepresentation(unwindTable)
+	// now we have a full compact unwind table that we have to split in different BPF maps.
+	fmt.Println("=> found", len(compactUnwindTable), "unwind entries for", fullExecutablePath, "low pc", fmt.Sprintf("%x", minCoveredPc), "high pc", fmt.Sprintf("%x", maxCoveredPc)) // @nocommit: remove
+
+	// Set unwind table.
+	if err := p.bpfMaps.setUnwindTable(pid, compactUnwindTable, executableMapping, procInfoBuf, minCoveredPc, maxCoveredPc); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (p *CPU) report(lastError error, processLastErrors map[int]error) {

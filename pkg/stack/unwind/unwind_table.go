@@ -18,17 +18,31 @@ import (
 	"debug/elf"
 	"fmt"
 	"io"
-	"path"
-	"sort"
 	"strings"
 
 	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
 	"github.com/hashicorp/go-multierror"
 	"github.com/prometheus/procfs"
 
 	"github.com/parca-dev/parca-agent/internal/dwarf/frame"
-	"github.com/parca-dev/parca-agent/pkg/executable"
+)
+
+type BpfCfaType uint16
+
+const (
+	CfaRegisterUndefined BpfCfaType = iota
+	CfaRegisterRbp
+	CfaRegisterRsp
+	CfaRegisterExpression
+)
+
+type BpfRbpType uint16
+
+const (
+	RbpRuleOffsetUnchanged BpfRbpType = iota
+	RbpRuleOffset
+	RbpRuleRegister
+	RbpRegisterExpression
 )
 
 // UnwindTableBuilder helps to build UnwindTable for a given PID.
@@ -114,56 +128,6 @@ func processMaps(pid int) (map[string]*procfs.ProcMap, string, error) {
 	return dynamicExecutables, mainExecutable, nil
 }
 
-func (ptb *UnwindTableBuilder) UnwindTableForPid(pid int) (UnwindTable, error) {
-	mappedFiles, mainExec, err := processMaps(pid)
-	if err != nil {
-		return nil, fmt.Errorf("error opening the maps %w", err)
-	}
-
-	ut := UnwindTable{}
-	for _, m := range mappedFiles {
-		executablePath := path.Join(fmt.Sprintf("/proc/%d/root", pid), m.Pathname)
-
-		level.Info(ptb.logger).Log("msg", "finding tables for mapped executable", "path", executablePath, "starting address", fmt.Sprintf("%x", m.StartAddr))
-		fdes, err := ptb.readFDEs(executablePath)
-		// TODO(javierhonduco): Add markers in between executable sections.
-		if err != nil {
-			level.Error(ptb.logger).Log("msg", "failed to read frame description entries", "obj", executablePath, "err", err)
-			continue
-		}
-
-		rows := buildUnwindTable(fdes)
-		if len(rows) == 0 {
-			level.Error(ptb.logger).Log("msg", "unwind table empty for", "obj", executablePath)
-			continue
-		}
-
-		level.Info(ptb.logger).Log("msg", "adding tables for mapped executable", "path", executablePath, "rows", len(rows), "low pc", fmt.Sprintf("%x", rows[0].Loc), "high pc", fmt.Sprintf("%x", rows[len(rows)-1].Loc))
-
-		aslrElegible, err := executable.IsASLRElegible(executablePath)
-		if err != nil {
-			return nil, fmt.Errorf("ASLR check failed with with: %w", err)
-		}
-
-		if strings.Contains(executablePath, mainExec) {
-			if aslrElegible {
-				for i := range rows {
-					rows[i].Loc += uint64(m.StartAddr)
-				}
-			}
-		} else {
-			for i := range rows {
-				rows[i].Loc += uint64(m.StartAddr)
-			}
-		}
-		ut = append(ut, rows...)
-	}
-
-	// Sort the entries so we can binary search over them.
-	sort.Sort(ut)
-	return ut, nil
-}
-
 func x64RegisterToString(reg uint64) string {
 	// TODO(javierhonduco):
 	// - add source for this table.
@@ -183,7 +147,7 @@ func x64RegisterToString(reg uint64) string {
 
 // PrintTable is a debugging helper that prints the unwinding table to the given io.Writer.
 func (ptb *UnwindTableBuilder) PrintTable(writer io.Writer, path string) error {
-	fdes, err := ptb.readFDEs(path)
+	fdes, err := ReadFDEs(path)
 	if err != nil {
 		return err
 	}
@@ -237,7 +201,7 @@ func (ptb *UnwindTableBuilder) PrintTable(writer io.Writer, path string) error {
 	return nil
 }
 
-func (ptb *UnwindTableBuilder) readFDEs(path string) (frame.FrameDescriptionEntries, error) {
+func ReadFDEs(path string) (frame.FrameDescriptionEntries, error) {
 	obj, err := elf.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open elf: %w", err)
@@ -265,7 +229,7 @@ func (ptb *UnwindTableBuilder) readFDEs(path string) (frame.FrameDescriptionEntr
 	return fdes, nil
 }
 
-func buildUnwindTable(fdes frame.FrameDescriptionEntries) UnwindTable {
+func BuildUnwindTable(fdes frame.FrameDescriptionEntries) UnwindTable {
 	table := make(UnwindTable, 0)
 	for _, fde := range fdes {
 		frameContext := frame.ExecuteDwarfProgram(fde, nil)
@@ -274,6 +238,108 @@ func buildUnwindTable(fdes frame.FrameDescriptionEntries) UnwindTable {
 		}
 	}
 	return table
+}
+
+// @nocommit: copied from BPF, add note on ABI.
+type CompactUnwindTableRow struct {
+	pc                    uint64
+	__reserved_do_not_use uint16
+	cfa_type              uint8
+	rbp_type              uint8
+	cfa_offset            int16
+	rbp_offset            int16
+}
+
+func (cutr *CompactUnwindTableRow) Pc() uint64 {
+	return cutr.pc
+}
+
+func (cutr *CompactUnwindTableRow) CfaType() uint8 {
+	return cutr.cfa_type
+}
+
+func (cutr *CompactUnwindTableRow) RbpType() uint8 {
+	return cutr.rbp_type
+}
+
+func (cutr *CompactUnwindTableRow) CfaOffset() int16 {
+	return cutr.cfa_offset
+}
+
+func (cutr *CompactUnwindTableRow) RbpOffset() int16 {
+	return cutr.rbp_offset
+}
+
+type CompactUnwindTable []CompactUnwindTableRow
+
+type CompactRowResult struct {
+	CfaRegister uint8
+	RbpRegister uint8
+	CfaOffset   int16
+	RbpOffset   int16
+}
+
+// @nocommit: improve name
+func rowToCompactRow(row UnwindTableRow) CompactRowResult {
+	var CfaRegister uint8
+	var RbpRegister uint8
+	var CfaOffset int16
+	var RbpOffset int16
+
+	// CFA.
+	switch row.CFA.Rule {
+	case frame.RuleCFA:
+		if row.CFA.Reg == frame.X86_64FramePointer {
+			CfaRegister = uint8(CfaRegisterRbp)
+		} else if row.CFA.Reg == frame.X86_64StackPointer {
+			CfaRegister = uint8(CfaRegisterRsp)
+		}
+		CfaOffset = int16(row.CFA.Offset)
+	case frame.RuleExpression:
+		CfaRegister = uint8(CfaRegisterExpression)
+		CfaOffset = int16(ExpressionIdentifier(row.CFA.Expression))
+
+	default:
+		panic(fmt.Errorf("CFA rule is not valid. This should never happen")) // @nocommit: remove panic
+	}
+
+	// Frame pointer.
+	switch row.RBP.Rule {
+	case frame.RuleUndefined:
+	case frame.RuleOffset:
+		RbpRegister = uint8(RbpRuleOffset)
+		RbpOffset = int16(row.RBP.Offset)
+	case frame.RuleRegister:
+		RbpRegister = uint8(RbpRuleRegister)
+	case frame.RuleExpression:
+		RbpRegister = uint8(RbpRegisterExpression)
+	}
+
+	return CompactRowResult{
+		CfaRegister,
+		RbpRegister,
+		CfaOffset,
+		RbpOffset,
+	}
+}
+
+func CompactUnwindTableRepresentation(unwindTable UnwindTable) CompactUnwindTable {
+	compactTable := make(CompactUnwindTable, 0)
+
+	for _, row := range unwindTable {
+		compactRowElements := rowToCompactRow(row)
+		compactRow := CompactUnwindTableRow{
+			pc:                    row.Loc,
+			__reserved_do_not_use: uint16(0),
+			cfa_type:              compactRowElements.CfaRegister,
+			rbp_type:              compactRowElements.RbpRegister,
+			cfa_offset:            compactRowElements.CfaOffset,
+			rbp_offset:            compactRowElements.RbpOffset,
+		}
+		compactTable = append(compactTable, compactRow)
+	}
+
+	return compactTable
 }
 
 // UnwindTableRow represents a single row in the unwind table.

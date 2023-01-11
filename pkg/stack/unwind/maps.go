@@ -25,6 +25,12 @@ type ExecutableMapping struct {
 	StartAddr  uint64
 	EndAddr    uint64
 	Executable string
+	mainExec   bool
+}
+
+// @nocommit: improve
+func (pm *ExecutableMapping) MainObject() bool {
+	return pm.mainExec
 }
 
 // IsJitted returns whether an executable mapping is JITed or not.
@@ -44,7 +50,7 @@ func (pm *ExecutableMapping) IsSpecial() bool {
 }
 
 func (pm *ExecutableMapping) String() string {
-	return fmt.Sprintf("ExecutableMapping {LoadAddr: 0x%x, StartAddr: 0x%x, EndAddr: 0x%x, Executable:%s}\n", pm.LoadAddr, pm.StartAddr, pm.EndAddr, pm.Executable)
+	return fmt.Sprintf("ExecutableMapping {LoadAddr: 0x%x, StartAddr: 0x%x, EndAddr: 0x%x, Executable:%s}", pm.LoadAddr, pm.StartAddr, pm.EndAddr, pm.Executable)
 }
 
 // executableMappingCount returns the number of executable mappings
@@ -68,6 +74,7 @@ func executableMappingCount(rawMappings []*procfs.ProcMap) uint {
 // sections without executable permissions, as they aren't needed.
 func ExecutableMappings(rawMappings []*procfs.ProcMap) []*ExecutableMapping {
 	result := make([]*ExecutableMapping, 0, executableMappingCount(rawMappings))
+	firstSeen := false
 	for idx, rawMapping := range rawMappings {
 		if rawMapping.Perms.Execute {
 			var LoadAddr uint64
@@ -87,7 +94,9 @@ func ExecutableMappings(rawMappings []*procfs.ProcMap) []*ExecutableMapping {
 				StartAddr:  uint64(rawMapping.StartAddr),
 				EndAddr:    uint64(rawMapping.EndAddr),
 				Executable: rawMapping.Pathname,
+				mainExec:   !firstSeen,
 			})
+			firstSeen = true
 		}
 	}
 
