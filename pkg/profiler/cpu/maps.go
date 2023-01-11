@@ -341,7 +341,6 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 	if err := binary.Write(procInfoBuf, m.byteOrder, adjustedLoadAddress); err != nil {
 		return fmt.Errorf("write RBP offset bytes: %w", err)
 	}
-
 	// .begin
 	if err := binary.Write(procInfoBuf, m.byteOrder, mapping.StartAddr); err != nil {
 		return fmt.Errorf("write RBP offset bytes: %w", err)
@@ -397,25 +396,6 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 			if err := binary.Write(buf, m.byteOrder, row); err != nil {
 				panic(fmt.Errorf("write row: %w", err))
 			}
-			// @nocommit: remove below
-			/* 	if err := binary.Write(buf, m.byteOrder, row.Pc()); err != nil {
-				panic(fmt.Errorf("write row: %w", err))
-			}
-			if err := binary.Write(buf, m.byteOrder, uint16(0)); err != nil {
-				panic(fmt.Errorf("write row: %w", err))
-			}
-			if err := binary.Write(buf, m.byteOrder, row.CfaType()); err != nil {
-				panic(fmt.Errorf("write row: %w", err))
-			}
-			if err := binary.Write(buf, m.byteOrder, row.RbpType()); err != nil {
-				panic(fmt.Errorf("write row: %w", err))
-			}
-			if err := binary.Write(buf, m.byteOrder, row.CfaOffset()); err != nil {
-				panic(fmt.Errorf("write row: %w", err))
-			}
-			if err := binary.Write(buf, m.byteOrder, row.RbpOffset()); err != nil {
-				panic(fmt.Errorf("write row: %w", err))
-			} */
 		}
 
 		// Set (table ID, shard ID) -> unwind table for each shard.
