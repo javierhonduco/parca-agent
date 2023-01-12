@@ -28,6 +28,7 @@ import (
 	"github.com/parca-dev/parca-agent/pkg/buildid"
 	"github.com/parca-dev/parca-agent/pkg/executable"
 	"github.com/parca-dev/parca-agent/pkg/stack/unwind"
+	"golang.org/x/exp/constraints"
 
 	bpf "github.com/aquasecurity/libbpfgo"
 )
@@ -82,6 +83,13 @@ type bpfMaps struct {
 	highIndex int
 	// Other stats
 	totalBytes uint64
+}
+
+func min[T constraints.Ordered](a, b T) T {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func initializeMaps(m *bpf.Module, byteOrder binary.ByteOrder) (*bpfMaps, error) {
@@ -352,6 +360,7 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 	} else {
 		adjustedLoadAddress = mapping.LoadAddr
 	}
+
 	elfFile, err := elf.Open(fullExecutablePath)
 	if err != nil {
 		return err
@@ -394,18 +403,24 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 		return maxUnwindTableSize - m.highIndex
 	}
 
+	assertInvariants := func() {
+		if m.lowIndex < 0 {
+			panic("m.lowIndex < 0, this is not ok")
+		}
+		if m.highIndex > maxUnwindTableSize {
+			panic("m.highIndex > 250k, this is not ok")
+		}
+	}
+
 	unwindShardsKeyBuf := new(bytes.Buffer)
 	unwindShardsValBuf := new(bytes.Buffer)
 
-	threshold := availableSpace()
-	if len(ut) <= threshold {
-		threshold = len(ut)
-	}
-
+	threshold := min(len(ut), availableSpace())
 	currentChunk := ut[:threshold]
 	restChunks := ut[threshold:]
 
-	numShards := 1 + len(restChunks)/maxUnwindTableSize
+	numShards := 1 + len(restChunks)/maxUnwindTableSize // @nocommit: verify this
+
 	// .len
 	if err := binary.Write(unwindShardsValBuf, m.byteOrder, uint64(numShards)); err != nil {
 		return fmt.Errorf("write RBP offset bytes: %w", err)
@@ -414,6 +429,8 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 	chunkIndex := 0
 
 	for {
+		assertInvariants()
+
 		fmt.Println("- current chunk size", len(currentChunk))
 		fmt.Println("- rest of chunk size", len(restChunks))
 
@@ -421,10 +438,6 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 
 		if chunkIndex > 10 {
 			panic("had to split too many times")
-		}
-
-		if m.highIndex > maxUnwindTableSize {
-			panic("right > 250k, this is not ok")
 		}
 
 		m.highIndex += len(currentChunk)
@@ -482,9 +495,8 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 		}
 
 		// ==================== set unwind table =================
-		leShardIndex := uint64(m.shardIndex)
-		fmt.Println("!! updating unwind table", leShardIndex, m.unwindInfoBuf.Len())
-		if err := m.unwindTables.Update(unsafe.Pointer(&leShardIndex), unsafe.Pointer(&m.unwindInfoBuf.Bytes()[0])); err != nil {
+		shardIndex := uint64(m.shardIndex)
+		if err := m.unwindTables.Update(unsafe.Pointer(&shardIndex), unsafe.Pointer(&m.unwindInfoBuf.Bytes()[0])); err != nil {
 			return fmt.Errorf("update unwind tables: %w", err)
 		}
 
@@ -507,38 +519,25 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 		}
 
 		// Recalculate for next iteration
-		threshold := availableSpace()
-
-		if len(restChunks) <= threshold {
-			threshold = len(restChunks)
-		}
-
+		threshold := min(len(restChunks), availableSpace())
 		currentChunk = restChunks[:threshold]
 		restChunks = restChunks[threshold:]
-
-		if len(currentChunk) == 0 {
-			panic("currentChunk==0")
-		}
 
 		chunkIndex++
 	}
 
-	fmt.Println("updating shards table", unwindShardsValBuf.Len())
 	if err := m.unwindShards.Update(unsafe.Pointer(&unwindShardsKeyBuf.Bytes()[0]), unsafe.Pointer(&unwindShardsValBuf.Bytes()[0])); err != nil {
 		return fmt.Errorf("update unwind tables: %w", err)
 	}
 
-	if m.highIndex > maxUnwindTableSize {
-		panic("right > 250k")
-	}
-
+	assertInvariants()
 	m.executableId++
 
-	// NO SPACE LEFT
+	// @nocommit NO SPACE LEFT
 	if availableSpace() == 0 {
 		panic("no space left, this should never happen")
 	}
 
-	// TODO: check if we are full and flush if that's the case
+	// @nocommit TODO: check if we are full and flush if that's the case
 	return nil
 }
