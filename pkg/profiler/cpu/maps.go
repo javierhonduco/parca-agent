@@ -18,12 +18,14 @@ import "C"
 
 import (
 	"bytes"
+	"debug/elf"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"path"
 	"unsafe"
 
+	"github.com/parca-dev/parca-agent/pkg/buildid"
 	"github.com/parca-dev/parca-agent/pkg/executable"
 	"github.com/parca-dev/parca-agent/pkg/stack/unwind"
 
@@ -350,8 +352,20 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 	} else {
 		adjustedLoadAddress = mapping.LoadAddr
 	}
-
-	fmt.Println("[info] adding memory mappings in for executable with ID", m.executableId)
+	elfFile, err := elf.Open(fullExecutablePath)
+	if err != nil {
+		return err
+	}
+	buildId, err := buildid.BuildID(&buildid.ElfFile{File: elfFile})
+	if err != nil {
+		return err
+	}
+	fmt.Println("[info] adding memory mappings in for executable with ID", m.executableId, "buildId", buildId)
+	_, found := m.buildIdMapping[buildId]
+	if found {
+		fmt.Println("seen this mapping before")
+	}
+	m.buildIdMapping[buildId] = m.executableId
 
 	// =================== MAPPINGS ===================
 	// .load_address
@@ -377,7 +391,7 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 	availableSpace := func() int {
 		// tried this using the buffer's methods
 		// but didn't succeed?
-		return 250*1000 - m.highIndex
+		return maxUnwindTableSize - m.highIndex
 	}
 
 	unwindShardsKeyBuf := new(bytes.Buffer)
@@ -409,7 +423,7 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 			panic("had to split too many times")
 		}
 
-		if m.highIndex > 250*1000 {
+		if m.highIndex > maxUnwindTableSize {
 			panic("right > 250k, this is not ok")
 		}
 
@@ -514,7 +528,7 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 		return fmt.Errorf("update unwind tables: %w", err)
 	}
 
-	if m.highIndex > 250*1000 {
+	if m.highIndex > maxUnwindTableSize {
 		panic("right > 250k")
 	}
 
