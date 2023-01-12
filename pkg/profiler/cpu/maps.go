@@ -43,12 +43,8 @@ const (
 	// With the current row structure, the max items we can store is 262k per map.
 	unwindTableMaxEntries = 100
 	maxUnwindTableSize    = 250 * 1000 // Always needs to be sync with MAX_UNWIND_TABLE_SIZE in the BPF program.
-	unwindTableShardCount = 6          // Always needs to be sync with MAX_SHARDS in the BPF program.
+	unwindTableShardCount = 30         // Always needs to be sync with MAX_SHARDS in the BPF program.
 	maxUnwindSize         = maxUnwindTableSize * unwindTableShardCount
-)
-
-var (
-	executableId = 100
 )
 
 var (
@@ -77,10 +73,13 @@ type bpfMaps struct {
 	//	globalView []{shard_id:, [all the ranges it contains]}
 	// which shard we are on
 	shardIndex    uint64
+	executableId  uint64
 	unwindInfoBuf *bytes.Buffer
 	// Account where we are within a shard
 	lowIndex  int
 	highIndex int
+	// Other stats
+	totalBytes uint64
 }
 
 func initializeMaps(m *bpf.Module, byteOrder binary.ByteOrder) (*bpfMaps, error) {
@@ -330,11 +329,9 @@ func (m *bpfMaps) clean() error {
 
 // setUnwindTable updates the unwind tables with the given unwind table.
 func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping *unwind.ExecutableMapping, procInfoBuf *bytes.Buffer, lowUnwindPc uint64, highUnwindPc uint64) error {
-	/* 	if len(ut) >= maxUnwindSize {
-		return fmt.Errorf("maximum unwind table size reached. Table size %d, but max size is %d", len(ut), maxUnwindSize)
-	} */
-
-	fmt.Println("=> setUnwindTable called")
+	fmt.Println("========================================================================================")
+	fmt.Println("setUnwindTable called (total shards:", m.shardIndex, ", total bytes:", m.totalBytes, ")")
+	fmt.Println("========================================================================================")
 
 	////////////////
 
@@ -354,7 +351,7 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 		adjustedLoadAddress = mapping.LoadAddr
 	}
 
-	fmt.Println("=> adding memory mappings in table", executableId)
+	fmt.Println("[info] adding memory mappings in for executable with ID", m.executableId)
 
 	// =================== MAPPINGS ===================
 	// .load_address
@@ -370,104 +367,164 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 		return fmt.Errorf("write RBP offset bytes: %w", err)
 	}
 	// .executable_id @nocommit: add caching here, right now treating them all as new
-	if err := binary.Write(procInfoBuf, m.byteOrder, uint64(executableId)); err != nil {
+	if err := binary.Write(procInfoBuf, m.byteOrder, uint64(m.executableId)); err != nil {
 		return fmt.Errorf("write RBP offset bytes: %w", err)
 	}
 
 	// =================== UNWIND TABLE ===================
 	// Range-partition the unwind table in the different shards.
 
-	availableSpace := m.unwindInfoBuf.Cap() - m.unwindInfoBuf.Len()
+	availableSpace := func() int {
+		// tried this using the buffer's methods
+		// but didn't succeed?
+		return 250*1000 - m.highIndex
+	}
 
-	if len(ut) <= availableSpace {
-		// ========================= it fits =======================
+	unwindShardsKeyBuf := new(bytes.Buffer)
+	unwindShardsValBuf := new(bytes.Buffer)
 
-		m.highIndex += len(ut)
-		fmt.Println("======================= left", m.lowIndex, "right", m.highIndex)
+	threshold := availableSpace()
+	if len(ut) <= threshold {
+		threshold = len(ut)
+	}
+
+	currentChunk := ut[:threshold]
+	restChunks := ut[threshold:]
+
+	numShards := 1 + len(restChunks)/maxUnwindTableSize
+	// .len
+	if err := binary.Write(unwindShardsValBuf, m.byteOrder, uint64(numShards)); err != nil {
+		return fmt.Errorf("write RBP offset bytes: %w", err)
+	}
+
+	chunkIndex := 0
+
+	for {
+		fmt.Println("- current chunk size", len(currentChunk))
+		fmt.Println("- rest of chunk size", len(restChunks))
+
+		m.totalBytes += uint64(len(currentChunk) * 16) // 2 x words in 64 bits = 2 * 8 = 16
+
+		if chunkIndex > 10 {
+			panic("had to split too many times")
+		}
+
+		if m.highIndex > 250*1000 {
+			panic("right > 250k, this is not ok")
+		}
+
+		m.highIndex += len(currentChunk)
+		fmt.Println("- lowindex [", m.lowIndex, "::", m.highIndex, "] rightindex")
+
+		// ======================== shard info ===============================
+		// Set (executable ID) -> unwind table shards info
+
+		fmt.Println("- executable", m.executableId, "mapping", mapping.Executable, "shard", chunkIndex)
+		if err := binary.Write(unwindShardsKeyBuf, m.byteOrder, uint64(m.executableId)); err != nil {
+			return fmt.Errorf("write RBP offset bytes: %w", err)
+		}
+
+		// note this might not be correct if using the unwind table info for the first or last items
+		minPc := uint64(lowUnwindPc)
+		if chunkIndex != 0 {
+			minPc = currentChunk[0].Pc()
+		}
+		// .low_pc
+		if err := binary.Write(unwindShardsValBuf, m.byteOrder, minPc); err != nil {
+			return fmt.Errorf("write RBP offset bytes: %w", err)
+		}
+
+		// note this might not be correct if using the unwind table info for the first or last items
+		maxPc := uint64(highUnwindPc)
+		if chunkIndex != 0 {
+			maxPc = currentChunk[len(currentChunk)-1].Pc()
+		}
+		// .high_pc
+		if err := binary.Write(unwindShardsValBuf, m.byteOrder, maxPc); err != nil {
+			return fmt.Errorf("write RBP offset bytes: %w", err)
+		}
+
+		// .shard_index
+		if err := binary.Write(unwindShardsValBuf, m.byteOrder, uint64(m.shardIndex)); err != nil {
+			return fmt.Errorf("write RBP offset bytes: %w", err)
+		}
+
+		// .low_index
+		if err := binary.Write(unwindShardsValBuf, m.byteOrder, uint64(m.lowIndex)); err != nil {
+			return fmt.Errorf("write RBP offset bytes: %w", err)
+		}
+		// .high_index
+		if err := binary.Write(unwindShardsValBuf, m.byteOrder, uint64(m.highIndex)); err != nil {
+			return fmt.Errorf("write RBP offset bytes: %w", err)
+		}
+
+		m.lowIndex = m.highIndex
 
 		// ====================== Write unwind table =====================
-		for _, row := range ut {
+		for _, row := range currentChunk {
 			if err := binary.Write(m.unwindInfoBuf, m.byteOrder, row); err != nil {
 				panic(fmt.Errorf("write row: %w", err))
 			}
 		}
 
-		// ======================== shard info ===============================
-		// Set (executable ID) -> unwind table shards info
-		keyBuf := new(bytes.Buffer)
-		valBuf := new(bytes.Buffer)
-
-		fmt.Println("============= executable", executableId, "mapping", mapping.Executable)
-		if err := binary.Write(keyBuf, m.byteOrder, uint64(executableId)); err != nil {
-			return fmt.Errorf("write RBP offset bytes: %w", err)
-		}
-
-		// .len
-		if err := binary.Write(valBuf, m.byteOrder, uint64(1)); err != nil {
-			return fmt.Errorf("write RBP offset bytes: %w", err)
-		}
-
-		// .low_pc
-		if err := binary.Write(valBuf, m.byteOrder, uint64(lowUnwindPc)); err != nil { // note this might not be correct if using the unwind table info for the first or last items
-			return fmt.Errorf("write RBP offset bytes: %w", err)
-		}
-
-		// .high_pc
-		if err := binary.Write(valBuf, m.byteOrder, uint64(highUnwindPc)); err != nil { // note this might not be correct if using the unwind table info for the first or last items
-			return fmt.Errorf("write RBP offset bytes: %w", err)
-		}
-
-		// .first_shard
-		if err := binary.Write(valBuf, m.byteOrder, uint64(m.shardIndex)); err != nil {
-			return fmt.Errorf("write RBP offset bytes: %w", err)
-		}
-
-		// .last_shard
-		if err := binary.Write(valBuf, m.byteOrder, uint64(m.shardIndex)); err != nil {
-			return fmt.Errorf("write RBP offset bytes: %w", err)
-		}
-
-		// .low_index
-		if err := binary.Write(valBuf, m.byteOrder, uint64(m.lowIndex)); err != nil {
-			return fmt.Errorf("write RBP offset bytes: %w", err)
-		}
-		// .high_index
-		if err := binary.Write(valBuf, m.byteOrder, uint64(m.highIndex)); err != nil {
-			return fmt.Errorf("write RBP offset bytes: %w", err)
-		}
-
-		if err := m.unwindShards.Update(unsafe.Pointer(&keyBuf.Bytes()[0]), unsafe.Pointer(&valBuf.Bytes()[0])); err != nil {
-			return fmt.Errorf("update unwind tables: %w", err)
-		}
-
-		m.lowIndex = m.highIndex
-		executableId++
-
 		// ==================== set unwind table =================
 		leShardIndex := uint64(m.shardIndex)
+		fmt.Println("!! updating unwind table", leShardIndex, m.unwindInfoBuf.Len())
 		if err := m.unwindTables.Update(unsafe.Pointer(&leShardIndex), unsafe.Pointer(&m.unwindInfoBuf.Bytes()[0])); err != nil {
 			return fmt.Errorf("update unwind tables: %w", err)
 		}
 
-		{
+		if len(restChunks) == 0 {
+			fmt.Println("!! done with the last chunk")
+			break
+		}
 
-			availableSpace := m.unwindInfoBuf.Cap() - m.unwindInfoBuf.Len()
-			if availableSpace == 0 {
-				panic("run out of space in the 'live' shard, not handlign this")
+		// Need a new shard?
+		if availableSpace() == 0 {
+			fmt.Println("run out of space in the 'live' shard, creating a new one")
+			m.shardIndex++
+			m.unwindInfoBuf.Reset() // @nocommit is it stored??
+			m.lowIndex = 0
+			m.highIndex = 0
+
+			if m.shardIndex == unwindTableShardCount {
+				panic("Not enough shards - this is not implemented but we should deal with this")
 			}
 		}
-	} else {
-		// ========================= it doesn't fit, we need to chunk the unwind table ===========================
-		fmt.Println("len(ut) <= availableSpace", len(ut), availableSpace)
-		currentChunk := ut[:availableSpace]
-		restChunks := ut[availableSpace:]
-		fmt.Println("current chunk", len(currentChunk))
-		fmt.Println("rest of chunks", len(restChunks))
 
-		panic("not implemented yet")
+		// Recalculate for next iteration
+		threshold := availableSpace()
 
+		if len(restChunks) <= threshold {
+			threshold = len(restChunks)
+		}
+
+		currentChunk = restChunks[:threshold]
+		restChunks = restChunks[threshold:]
+
+		if len(currentChunk) == 0 {
+			panic("currentChunk==0")
+		}
+
+		chunkIndex++
 	}
-	// TODO: check if we are full and flush if that's the case
 
+	fmt.Println("updating shards table", unwindShardsValBuf.Len())
+	if err := m.unwindShards.Update(unsafe.Pointer(&unwindShardsKeyBuf.Bytes()[0]), unsafe.Pointer(&unwindShardsValBuf.Bytes()[0])); err != nil {
+		return fmt.Errorf("update unwind tables: %w", err)
+	}
+
+	if m.highIndex > 250*1000 {
+		panic("right > 250k")
+	}
+
+	m.executableId++
+
+	// NO SPACE LEFT
+	if availableSpace() == 0 {
+		panic("no space left, this should never happen")
+	}
+
+	// TODO: check if we are full and flush if that's the case
 	return nil
 }

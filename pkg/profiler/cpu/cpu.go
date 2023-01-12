@@ -531,11 +531,11 @@ func (p *CPU) addUnwindTableForProcessMapping(pid int, executableMapping *unwind
 	// 3. Get the compact, BPF-friendly representation
 	compactUnwindTable := unwind.CompactUnwindTableRepresentation(unwindTable)
 	// now we have a full compact unwind table that we have to split in different BPF maps.
-	fmt.Println("=> found", len(compactUnwindTable), "unwind entries for", fullExecutablePath, "low pc", fmt.Sprintf("%x", minCoveredPc), "high pc", fmt.Sprintf("%x", maxCoveredPc)) // @nocommit: remove
+	fmt.Println("=> found", len(compactUnwindTable), "unwind entries for", executableMapping.Executable, "low pc", fmt.Sprintf("%x", minCoveredPc), "high pc", fmt.Sprintf("%x", maxCoveredPc)) // @nocommit: remove
 
 	// Set unwind table.
 	if err := p.bpfMaps.setUnwindTable(pid, compactUnwindTable, executableMapping, procInfoBuf, minCoveredPc, maxCoveredPc); err != nil {
-		return err
+		panic(err)
 	}
 
 	return nil

@@ -1,0 +1,19 @@
+1. Read the code
+2. Make it better
+3. Try to improve it
+4. Add WebUI
+5. Add JIT detection?
+6. Do lots of testing (edge cases etc)
+7. Add caching
+
+
+
+
+== bugs
+
+- nginx fails sometimes
+- make && sudo dist/parca-agent --node=test --remote-store-insecure  --remote-store-address=127.0.0.1:7070 --experimental-enable-dwarf-unwinding --debug-process-names="(systemd|python|ruby|irb|bash)" fails
+
+perhaps and edge case?
+
+- left 226562 right 250000

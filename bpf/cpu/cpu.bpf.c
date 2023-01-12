@@ -37,7 +37,7 @@
 #define MAX_BINARY_SEARCH_DEPTH 20
 // Size of the unwind table.
 #define MAX_UNWIND_TABLE_SIZE 250 * 1000
-#define MAX_SHARDS 15
+#define MAX_SHARDS 30
 #define MAX_MAPS_PER_PROCESS 120 // @nocommit improve
 
 // Values for dwarf expressions.
@@ -177,8 +177,7 @@ typedef struct shard_info {
   u64 low_pc;
   u64 high_pc;
 
-  u64 first_shard;
-  u64 last_shard;
+  u64 shard_index;
 
   u64 low_index;
   u64 high_index;
@@ -214,9 +213,8 @@ BPF_HASH(debug_pids, int, u8, 32);
 BPF_HASH(stack_counts, stack_count_key_t, u64, MAX_STACK_COUNTS_ENTRIES);
 BPF_STACK_TRACE(stack_traces, MAX_STACK_TRACES);
 BPF_HASH(dwarf_stack_traces, int, stack_trace_t, MAX_STACK_TRACES);
-BPF_HASH(unwind_shards, u64, stack_unwind_table_shards_t, 150); // @nocommit: update
-BPF_HASH(unwind_tables, u64, stack_unwind_table_t, 2); // Table size will be updated in userspace.
-
+BPF_HASH(unwind_shards, u64, stack_unwind_table_shards_t, 5*1000); // <executable_id, shardmap> @nocommit: update
+BPF_HASH(unwind_tables, u64, stack_unwind_table_t, MAX_SHARDS); // Table size will be updated in userspace.
 BPF_HASH(process_info, int, process_info_t, MAX_PID_MAP_SIZE);
 
 
@@ -478,18 +476,6 @@ find_unwind_table(pid_t pid, u64 pc, u64 *offset) {
   }
 
 
-/*   u64 low_pc;
-  u64 high_pc;
-
-  u64 first_shard;
-  u64 last_shard;
-
-  u64 low_index;
-  u64 high_index; */
-
-
-
-
 /*     key.shard = i;
     bpf_printk("checking table=%d shard=%d", table_id, i);
     stack_unwind_table_t *shard = bpf_map_lookup_elem(&unwind_tables, &key);
@@ -614,9 +600,9 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
       break;
     }
 
-    stack_unwind_table_t *unwind_table = bpf_map_lookup_elem(&unwind_tables, &shard->first_shard);
+    stack_unwind_table_t *unwind_table = bpf_map_lookup_elem(&unwind_tables, &shard->shard_index);
     if (unwind_table == NULL) {
-      bpf_printk("unwind table is null :( for shard %llu", shard->first_shard);
+      bpf_printk("unwind table is null :( for shard %llu", shard->shard_index);
       return 0;
     }
 

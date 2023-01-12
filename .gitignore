@@ -9,6 +9,8 @@ TODO.md
 minikube-*
 /data
 
+bpf_logs_*.txt
+
 # Snap Packaging Artifacts
 *.snap
 snap/local/parca-agent
