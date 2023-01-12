@@ -72,11 +72,15 @@ type bpfMaps struct {
 	unwindTables *bpf.BPFMap
 	programs     *bpf.BPFMap
 
-	// unwind stuff
+	// unwind stuff 🔬
+	buildIdMapping map[string]uint64
+	//	globalView []{shard_id:, [all the ranges it contains]}
+	// which shard we are on
 	shardIndex    uint64
 	unwindInfoBuf *bytes.Buffer
-	lowIndex      int
-	highIndex     int
+	// Account where we are within a shard
+	lowIndex  int
+	highIndex int
 }
 
 func initializeMaps(m *bpf.Module, byteOrder binary.ByteOrder) (*bpfMaps, error) {
@@ -87,9 +91,10 @@ func initializeMaps(m *bpf.Module, byteOrder binary.ByteOrder) (*bpfMaps, error)
 	unwindInfoArray := make([]byte, 0, maxUnwindTableSize)
 
 	maps := &bpfMaps{
-		module:        m,
-		byteOrder:     byteOrder,
-		unwindInfoBuf: bytes.NewBuffer(unwindInfoArray),
+		module:         m,
+		byteOrder:      byteOrder,
+		unwindInfoBuf:  bytes.NewBuffer(unwindInfoArray),
+		buildIdMapping: make(map[string]uint64),
 	}
 
 	return maps, nil
@@ -380,16 +385,11 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 		m.highIndex += len(ut)
 		fmt.Println("======================= left", m.lowIndex, "right", m.highIndex)
 
-		// Write unwind table
+		// ====================== Write unwind table =====================
 		for _, row := range ut {
 			if err := binary.Write(m.unwindInfoBuf, m.byteOrder, row); err != nil {
 				panic(fmt.Errorf("write row: %w", err))
 			}
-		}
-
-		leShardIndex := uint64(m.shardIndex)
-		if err := m.unwindTables.Update(unsafe.Pointer(&leShardIndex), unsafe.Pointer(&m.unwindInfoBuf.Bytes()[0])); err != nil {
-			return fmt.Errorf("update unwind tables: %w", err)
 		}
 
 		// ======================== shard info ===============================
@@ -442,70 +442,32 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 
 		m.lowIndex = m.highIndex
 		executableId++
-	} else {
-		// ========================= it doesn't fit, we need to chunk the unwind table ===========================
-		panic("not implemented yet")
-	}
-	// TODO: check if we are full and flush if that's the case
-	// shardIndex++
-	//buf.Reset()
 
-	/* shardIndex := 0
-	for i := 0; i < len(ut); i += maxUnwindTableSize {
-		upTo := i + maxUnwindTableSize
-		if upTo > len(ut) {
-			upTo = len(ut)
-		}
-
-		chunk := ut[i:upTo]
-
-		// IMPORTANT NOTE (@nocommit):
-		//
-		// 	we want these address to be realative so we can reuse them, that's why we use the min and max PCs.
-
-		// @nocommit: see if we can change this with the start and end of mappings.
-		// Write `.low_pc`
-		fmt.Println("======== executable", mapping.Executable, "low pc", fmt.Sprintf("%x", lowUnwindPc), "high pc", fmt.Sprintf("%x", highUnwindPc)) // @nocommit: remove
-		if err := binary.Write(buf, m.byteOrder, lowUnwindPc); err != nil {
-			return fmt.Errorf("write the number of rows: %w", err)
-		}
-		// Write `.high_pc`.
-		if err := binary.Write(buf, m.byteOrder, highUnwindPc); err != nil {
-			return fmt.Errorf("write the number of rows: %w", err)
-		}
-		// Write number of rows `.table_len`.
-		if err := binary.Write(buf, m.byteOrder, uint64(len(chunk))); err != nil {
-			return fmt.Errorf("write the number of rows: %w", err)
-		}
-		// Write `.__explicit_padding`.
-		if err := binary.Write(buf, m.byteOrder, uint64(0)); err != nil {
-			return fmt.Errorf("write the number of rows: %w", err)
-		}
-
-		for _, row := range chunk {
-			if err := binary.Write(buf, m.byteOrder, row); err != nil {
-				panic(fmt.Errorf("write row: %w", err))
-			}
-		}
-
-		// Set (table ID, shard ID) -> unwind table for each shard.
-		keyBuf := new(bytes.Buffer)
-		fmt.Println("============= table id", executableId, "mapping", mapping.Executable)
-		if err := binary.Write(keyBuf, m.byteOrder, int32(executableId)); err != nil {
-			return fmt.Errorf("write RBP offset bytes: %w", err)
-		}
-		if err := binary.Write(keyBuf, m.byteOrder, int32(shardIndex)); err != nil {
-			return fmt.Errorf("write RBP offset bytes: %w", err)
-		}
-
-		if err := m.unwindTables.Update(unsafe.Pointer(&keyBuf.Bytes()[0]), unsafe.Pointer(&buf.Bytes()[0])); err != nil {
+		// ==================== set unwind table =================
+		leShardIndex := uint64(m.shardIndex)
+		if err := m.unwindTables.Update(unsafe.Pointer(&leShardIndex), unsafe.Pointer(&m.unwindInfoBuf.Bytes()[0])); err != nil {
 			return fmt.Errorf("update unwind tables: %w", err)
 		}
 
-		executableId++
-		shardIndex++
-		buf.Reset()
+		{
+
+			availableSpace := m.unwindInfoBuf.Cap() - m.unwindInfoBuf.Len()
+			if availableSpace == 0 {
+				panic("run out of space in the 'live' shard, not handlign this")
+			}
+		}
+	} else {
+		// ========================= it doesn't fit, we need to chunk the unwind table ===========================
+		fmt.Println("len(ut) <= availableSpace", len(ut), availableSpace)
+		currentChunk := ut[:availableSpace]
+		restChunks := ut[availableSpace:]
+		fmt.Println("current chunk", len(currentChunk))
+		fmt.Println("rest of chunks", len(restChunks))
+
+		panic("not implemented yet")
+
 	}
-	*/
+	// TODO: check if we are full and flush if that's the case
+
 	return nil
 }
