@@ -82,7 +82,9 @@ type bpfMaps struct {
 	lowIndex  int
 	highIndex int
 	// Other stats
-	totalEntries uint64
+	totalEntries       uint64
+	uniqueMappings     uint64
+	referencedMappings uint64
 }
 
 func min[T constraints.Ordered](a, b T) T {
@@ -389,6 +391,7 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 	_, foundMapping := m.buildIdMapping[buildId]
 	if foundMapping {
 		fmt.Println("-> caching - seen this mapping before")
+		m.referencedMappings += 1
 	} else {
 		fmt.Println("-> caching - new mapping")
 
@@ -545,6 +548,7 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 		}
 
 		m.executableId++
+		m.uniqueMappings++
 	}
 
 	assertInvariants()

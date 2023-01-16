@@ -37,7 +37,7 @@
 #define MAX_BINARY_SEARCH_DEPTH 20
 // Size of the unwind table.
 #define MAX_UNWIND_TABLE_SIZE 250 * 1000
-#define MAX_SHARDS 30
+#define MAX_SHARDS 30 // 1 shard is 4 megabytes
 #define MAX_MAPS_PER_PROCESS 120 // @nocommit improve
 
 // Values for dwarf expressions.
@@ -209,7 +209,7 @@ u32 UNWIND_SAMPLES_COUNT = 7;
 
 /*================================ MAPS =====================================*/
 
-BPF_HASH(debug_pids, int, u8, 32);
+BPF_HASH(debug_pids, int, u8, MAX_PID_MAP_SIZE);
 BPF_HASH(stack_counts, stack_count_key_t, u64, MAX_STACK_COUNTS_ENTRIES);
 BPF_STACK_TRACE(stack_traces, MAX_STACK_TRACES);
 BPF_HASH(dwarf_stack_traces, int, stack_trace_t, MAX_STACK_TRACES);

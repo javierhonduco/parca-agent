@@ -442,16 +442,18 @@ func (p *CPU) watchProcesses(ctx context.Context, pfs procfs.FS, matchers []*reg
 		level.Debug(p.logger).Log("msg", "updating debug pids map", "pids", fmt.Sprintf("%v", pids))
 		// Only meant to be used for debugging, it is not safe to use in production.
 		if err := p.bpfMaps.setDebugPIDs(pids); err != nil {
-			level.Warn(p.logger).Log("msg", "failed to update debug pids map", "err", err)
+			panic(err)
+			level.Error(p.logger).Log("msg", "failed to update debug pids map", "err", err)
 		}
 	} else {
 		level.Debug(p.logger).Log("msg", "no processes matched the provided regex")
 		if err := p.bpfMaps.setDebugPIDs(nil); err != nil {
-			level.Warn(p.logger).Log("msg", "failed to update debug pids map", "err", err)
+			level.Error(p.logger).Log("msg", "failed to update debug pids map", "err", err)
 		}
 		return
 	}
 
+	count := 0
 	// Can only be enabled when a debug process name is specified.
 	if p.enableDWARFUnwinding {
 		// Update unwind tables for the given pids.
@@ -481,6 +483,7 @@ func (p *CPU) watchProcesses(ctx context.Context, pfs procfs.FS, matchers []*reg
 			}
 
 			unwindTableCache.Put(pid, struct{}{})
+			count++
 		}
 	}
 }
