@@ -521,6 +521,10 @@ func (p *CPU) addUnwindTableForProcessMapping(pid int, executableMapping *unwind
 		return err
 	}
 
+	if len(fdes) == 0 {
+		return fmt.Errorf("fde was zero")
+	}
+
 	sort.Sort(fdes) // hope this help with efficiency, too
 	minCoveredPc := fdes[0].Begin()
 	maxCoveredPc := fdes[len(fdes)-1].End()

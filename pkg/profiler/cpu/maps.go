@@ -82,7 +82,7 @@ type bpfMaps struct {
 	lowIndex  int
 	highIndex int
 	// Other stats
-	totalBytes uint64
+	totalEntries uint64
 }
 
 func min[T constraints.Ordered](a, b T) T {
@@ -340,7 +340,7 @@ func (m *bpfMaps) clean() error {
 // setUnwindTable updates the unwind tables with the given unwind table.
 func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping *unwind.ExecutableMapping, procInfoBuf *bytes.Buffer, lowUnwindPc uint64, highUnwindPc uint64) error {
 	fmt.Println("========================================================================================")
-	fmt.Println("setUnwindTable called (total shards:", m.shardIndex, ", total bytes:", m.totalBytes, ")")
+	fmt.Println("setUnwindTable called (total shards:", m.shardIndex, ", total entries:", m.totalEntries, ")")
 	fmt.Println("========================================================================================")
 
 	////////////////
@@ -434,14 +434,14 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 		fmt.Println("- current chunk size", len(currentChunk))
 		fmt.Println("- rest of chunk size", len(restChunks))
 
-		m.totalBytes += uint64(len(currentChunk) * 16) // 2 x words in 64 bits = 2 * 8 = 16
+		m.totalEntries += uint64(len(currentChunk))
 
 		if chunkIndex > 10 {
 			panic("had to split too many times")
 		}
 
 		m.highIndex += len(currentChunk)
-		fmt.Println("- lowindex [", m.lowIndex, "::", m.highIndex, "] rightindex")
+		fmt.Println("- lowindex [", m.lowIndex, ":", m.highIndex, "] highIndex")
 
 		// ======================== shard info ===============================
 		// Set (executable ID) -> unwind table shards info
@@ -452,9 +452,9 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 		}
 
 		// note this might not be correct if using the unwind table info for the first or last items
-		minPc := uint64(lowUnwindPc)
-		if chunkIndex != 0 {
-			minPc = currentChunk[0].Pc()
+		minPc := currentChunk[0].Pc()
+		if chunkIndex == 0 {
+			minPc = uint64(lowUnwindPc)
 		}
 		// .low_pc
 		if err := binary.Write(unwindShardsValBuf, m.byteOrder, minPc); err != nil {
@@ -462,9 +462,9 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 		}
 
 		// note this might not be correct if using the unwind table info for the first or last items
-		maxPc := uint64(highUnwindPc)
-		if chunkIndex != 0 {
-			maxPc = currentChunk[len(currentChunk)-1].Pc()
+		maxPc := currentChunk[len(currentChunk)-1].Pc()
+		if chunkIndex == numShards {
+			maxPc = uint64(highUnwindPc)
 		}
 		// .high_pc
 		if err := binary.Write(unwindShardsValBuf, m.byteOrder, maxPc); err != nil {
@@ -485,7 +485,7 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 			return fmt.Errorf("write RBP offset bytes: %w", err)
 		}
 
-		m.lowIndex = m.highIndex
+		m.lowIndex = m.highIndex + 1 // @nocommit this is wrong???
 
 		// ====================== Write unwind table =====================
 		for _, row := range currentChunk {
@@ -514,6 +514,7 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 			m.highIndex = 0
 
 			if m.shardIndex == unwindTableShardCount {
+				fmt.Println(m.buildIdMapping)
 				panic("Not enough shards - this is not implemented but we should deal with this")
 			}
 		}
