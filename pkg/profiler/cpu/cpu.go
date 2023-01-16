@@ -539,7 +539,7 @@ func (p *CPU) addUnwindTableForProcessMapping(pid int, executableMapping *unwind
 
 	// Set unwind table.
 	if err := p.bpfMaps.setUnwindTable(pid, compactUnwindTable, executableMapping, procInfoBuf, minCoveredPc, maxCoveredPc); err != nil {
-		panic(err)
+		panic(fmt.Errorf("setUnwindTable: %w", err))
 	}
 
 	return nil

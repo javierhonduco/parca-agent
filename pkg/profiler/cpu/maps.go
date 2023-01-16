@@ -363,12 +363,13 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 
 	elfFile, err := elf.Open(fullExecutablePath)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed opening elf file %s: %w", fullExecutablePath, err)
 	}
-	buildId, err := buildid.BuildID(&buildid.ElfFile{File: elfFile})
+	buildId, err := buildid.BuildID(&buildid.ElfFile{File: elfFile, Path: fullExecutablePath})
 	if err != nil {
-		return err
+		return fmt.Errorf("BuildID failed %s: %w", fullExecutablePath, err)
 	}
+
 	fmt.Println("[info] adding memory mappings in for executable with ID", m.executableId, "buildId", buildId)
 	_, found := m.buildIdMapping[buildId]
 	if found {
@@ -485,7 +486,7 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 			return fmt.Errorf("write RBP offset bytes: %w", err)
 		}
 
-		m.lowIndex = m.highIndex + 1 // @nocommit this is wrong???
+		m.lowIndex = m.highIndex // @nocommit this is wrong???
 
 		// ====================== Write unwind table =====================
 		for _, row := range currentChunk {
@@ -495,6 +496,7 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 		}
 
 		// ==================== set unwind table =================
+		// @nocommit: only update when needed.
 		shardIndex := uint64(m.shardIndex)
 		if err := m.unwindTables.Update(unsafe.Pointer(&shardIndex), unsafe.Pointer(&m.unwindInfoBuf.Bytes()[0])); err != nil {
 			return fmt.Errorf("update unwind tables: %w", err)
