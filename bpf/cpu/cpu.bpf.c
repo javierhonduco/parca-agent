@@ -31,7 +31,7 @@
 #define MAX_STACK_COUNTS_ENTRIES 10240
 // Size of the `<pid, unwind_table>` mapping. Determines how many <=
 // @nocommit change processes we can unwind.
-#define MAX_PID_MAP_SIZE 500 // @nocommit change this
+#define MAX_PID_MAP_SIZE 1500 // @nocommit change this
 // Binary search iterations for dwarf based stack walking.
 // 2^20 can bisect ~1_048_576 entries.
 #define MAX_BINARY_SEARCH_DEPTH 20

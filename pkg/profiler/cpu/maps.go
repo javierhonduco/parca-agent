@@ -371,28 +371,35 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 	}
 
 	fmt.Println("[info] adding memory mappings in for executable with ID", m.executableId, "buildId", buildId)
-	_, found := m.buildIdMapping[buildId]
-	if found {
-		fmt.Println("seen this mapping before")
-	}
-	m.buildIdMapping[buildId] = m.executableId
 
 	// =================== MAPPINGS ===================
 	// .load_address
 	if err := binary.Write(procInfoBuf, m.byteOrder, adjustedLoadAddress); err != nil {
-		return fmt.Errorf("write RBP offset bytes: %w", err)
+		return fmt.Errorf("write mappings .load_address bytes: %w", err)
 	}
 	// .begin
 	if err := binary.Write(procInfoBuf, m.byteOrder, mapping.StartAddr); err != nil {
-		return fmt.Errorf("write RBP offset bytes: %w", err)
+		return fmt.Errorf("write mappings .begin bytes: %w", err)
 	}
 	// .end
 	if err := binary.Write(procInfoBuf, m.byteOrder, mapping.EndAddr); err != nil {
-		return fmt.Errorf("write RBP offset bytes: %w", err)
+		return fmt.Errorf("write mappings .end bytes: %w", err)
 	}
-	// .executable_id @nocommit: add caching here, right now treating them all as new
-	if err := binary.Write(procInfoBuf, m.byteOrder, uint64(m.executableId)); err != nil {
-		return fmt.Errorf("write RBP offset bytes: %w", err)
+
+	_, foundMapping := m.buildIdMapping[buildId]
+	if foundMapping {
+		fmt.Println("-> caching - seen this mapping before")
+	} else {
+		fmt.Println("-> caching - new mapping")
+
+		m.buildIdMapping[buildId] = m.executableId
+	}
+
+	// bit silly
+	foundExecutableId := m.buildIdMapping[buildId]
+	// .executable_id
+	if err := binary.Write(procInfoBuf, m.byteOrder, uint64(foundExecutableId)); err != nil {
+		return fmt.Errorf("write proc info .executable_id bytes: %w", err)
 	}
 
 	// =================== UNWIND TABLE ===================
@@ -424,117 +431,123 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 
 	// .len
 	if err := binary.Write(unwindShardsValBuf, m.byteOrder, uint64(numShards)); err != nil {
-		return fmt.Errorf("write RBP offset bytes: %w", err)
+		return fmt.Errorf("write shards .len bytes: %w", err)
 	}
 
 	chunkIndex := 0
 
-	for {
-		assertInvariants()
+	if !foundMapping {
+		for {
+			assertInvariants()
 
-		fmt.Println("- current chunk size", len(currentChunk))
-		fmt.Println("- rest of chunk size", len(restChunks))
+			fmt.Println("- current chunk size", len(currentChunk))
+			fmt.Println("- rest of chunk size", len(restChunks))
 
-		m.totalEntries += uint64(len(currentChunk))
+			m.totalEntries += uint64(len(currentChunk))
 
-		if chunkIndex > 10 {
-			panic("had to split too many times")
-		}
-
-		m.highIndex += len(currentChunk)
-		fmt.Println("- lowindex [", m.lowIndex, ":", m.highIndex, "] highIndex")
-
-		// ======================== shard info ===============================
-		// Set (executable ID) -> unwind table shards info
-
-		fmt.Println("- executable", m.executableId, "mapping", mapping.Executable, "shard", chunkIndex)
-		if err := binary.Write(unwindShardsKeyBuf, m.byteOrder, uint64(m.executableId)); err != nil {
-			return fmt.Errorf("write RBP offset bytes: %w", err)
-		}
-
-		// note this might not be correct if using the unwind table info for the first or last items
-		minPc := currentChunk[0].Pc()
-		if chunkIndex == 0 {
-			minPc = uint64(lowUnwindPc)
-		}
-		// .low_pc
-		if err := binary.Write(unwindShardsValBuf, m.byteOrder, minPc); err != nil {
-			return fmt.Errorf("write RBP offset bytes: %w", err)
-		}
-
-		// note this might not be correct if using the unwind table info for the first or last items
-		maxPc := currentChunk[len(currentChunk)-1].Pc()
-		if chunkIndex == numShards {
-			maxPc = uint64(highUnwindPc)
-		}
-		// .high_pc
-		if err := binary.Write(unwindShardsValBuf, m.byteOrder, maxPc); err != nil {
-			return fmt.Errorf("write RBP offset bytes: %w", err)
-		}
-
-		// .shard_index
-		if err := binary.Write(unwindShardsValBuf, m.byteOrder, uint64(m.shardIndex)); err != nil {
-			return fmt.Errorf("write RBP offset bytes: %w", err)
-		}
-
-		// .low_index
-		if err := binary.Write(unwindShardsValBuf, m.byteOrder, uint64(m.lowIndex)); err != nil {
-			return fmt.Errorf("write RBP offset bytes: %w", err)
-		}
-		// .high_index
-		if err := binary.Write(unwindShardsValBuf, m.byteOrder, uint64(m.highIndex)); err != nil {
-			return fmt.Errorf("write RBP offset bytes: %w", err)
-		}
-
-		m.lowIndex = m.highIndex // @nocommit this is wrong???
-
-		// ====================== Write unwind table =====================
-		for _, row := range currentChunk {
-			if err := binary.Write(m.unwindInfoBuf, m.byteOrder, row); err != nil {
-				panic(fmt.Errorf("write row: %w", err))
+			if chunkIndex > 10 {
+				panic("had to split too many times")
 			}
+
+			m.highIndex += len(currentChunk)
+			fmt.Println("- lowindex [", m.lowIndex, ":", m.highIndex, "] highIndex")
+
+			// ======================== shard info ===============================
+			// Set (executable ID) -> unwind table shards info
+			// basically have the info
+
+			fmt.Println("- executable", m.executableId, "mapping", mapping.Executable, "shard", chunkIndex)
+			if err := binary.Write(unwindShardsKeyBuf, m.byteOrder, uint64(m.executableId)); err != nil {
+				return fmt.Errorf("write shards key bytes: %w", err)
+			}
+
+			// note this might not be correct if using the unwind table info for the first or last items
+			minPc := currentChunk[0].Pc()
+			if chunkIndex == 0 {
+				minPc = uint64(lowUnwindPc)
+			}
+			// .low_pc
+			if err := binary.Write(unwindShardsValBuf, m.byteOrder, minPc); err != nil {
+				return fmt.Errorf("write shards .low_pc bytes: %w", err)
+			}
+
+			// note this might not be correct if using the unwind table info for the first or last items
+			maxPc := currentChunk[len(currentChunk)-1].Pc()
+			if chunkIndex == numShards {
+				maxPc = uint64(highUnwindPc)
+			}
+			// .high_pc
+			if err := binary.Write(unwindShardsValBuf, m.byteOrder, maxPc); err != nil {
+				return fmt.Errorf("write shards .high_pc bytes: %w", err)
+			}
+
+			// .shard_index
+			if err := binary.Write(unwindShardsValBuf, m.byteOrder, uint64(m.shardIndex)); err != nil {
+				return fmt.Errorf("write shards .shard_index bytes: %w", err)
+			}
+
+			// .low_index
+			if err := binary.Write(unwindShardsValBuf, m.byteOrder, uint64(m.lowIndex)); err != nil {
+				return fmt.Errorf("write shards .low_index bytes: %w", err)
+			}
+			// .high_index
+			if err := binary.Write(unwindShardsValBuf, m.byteOrder, uint64(m.highIndex)); err != nil {
+				return fmt.Errorf("write shards .high_index bytes: %w", err)
+			}
+
+			m.lowIndex = m.highIndex // @nocommit this is wrong???
+
+			// ====================== Write unwind table =====================
+			for _, row := range currentChunk {
+				if err := binary.Write(m.unwindInfoBuf, m.byteOrder, row); err != nil {
+					panic(fmt.Errorf("write row: %w", err))
+				}
+			}
+
+			// ==================== set unwind table =================
+			// @nocommit: only update when needed.
+			shardIndex := uint64(m.shardIndex)
+			if err := m.unwindTables.Update(unsafe.Pointer(&shardIndex), unsafe.Pointer(&m.unwindInfoBuf.Bytes()[0])); err != nil {
+				return fmt.Errorf("update unwind tables: %w", err)
+			}
+
+			if len(restChunks) == 0 {
+				fmt.Println("!! done with the last chunk")
+				break
+			}
+
+			// Need a new shard?
+			if availableSpace() == 0 {
+				fmt.Println("run out of space in the 'live' shard, creating a new one")
+				m.shardIndex++
+				m.unwindInfoBuf.Reset() // @nocommit is it stored??
+				m.lowIndex = 0
+				m.highIndex = 0
+
+				if m.shardIndex == unwindTableShardCount {
+					fmt.Println(m.buildIdMapping)
+					panic("Not enough shards - this is not implemented but we should deal with this")
+				}
+			}
+
+			// Recalculate for next iteration
+			threshold := min(len(restChunks), availableSpace())
+			currentChunk = restChunks[:threshold]
+			restChunks = restChunks[threshold:]
+
+			chunkIndex++
 		}
 
-		// ==================== set unwind table =================
-		// @nocommit: only update when needed.
-		shardIndex := uint64(m.shardIndex)
-		if err := m.unwindTables.Update(unsafe.Pointer(&shardIndex), unsafe.Pointer(&m.unwindInfoBuf.Bytes()[0])); err != nil {
+		if err := m.unwindShards.Update(
+			unsafe.Pointer(&unwindShardsKeyBuf.Bytes()[0]),
+			unsafe.Pointer(&unwindShardsValBuf.Bytes()[0])); err != nil {
 			return fmt.Errorf("update unwind tables: %w", err)
 		}
 
-		if len(restChunks) == 0 {
-			fmt.Println("!! done with the last chunk")
-			break
-		}
-
-		// Need a new shard?
-		if availableSpace() == 0 {
-			fmt.Println("run out of space in the 'live' shard, creating a new one")
-			m.shardIndex++
-			m.unwindInfoBuf.Reset() // @nocommit is it stored??
-			m.lowIndex = 0
-			m.highIndex = 0
-
-			if m.shardIndex == unwindTableShardCount {
-				fmt.Println(m.buildIdMapping)
-				panic("Not enough shards - this is not implemented but we should deal with this")
-			}
-		}
-
-		// Recalculate for next iteration
-		threshold := min(len(restChunks), availableSpace())
-		currentChunk = restChunks[:threshold]
-		restChunks = restChunks[threshold:]
-
-		chunkIndex++
-	}
-
-	if err := m.unwindShards.Update(unsafe.Pointer(&unwindShardsKeyBuf.Bytes()[0]), unsafe.Pointer(&unwindShardsValBuf.Bytes()[0])); err != nil {
-		return fmt.Errorf("update unwind tables: %w", err)
+		m.executableId++
 	}
 
 	assertInvariants()
-	m.executableId++
 
 	// @nocommit NO SPACE LEFT
 	if availableSpace() == 0 {

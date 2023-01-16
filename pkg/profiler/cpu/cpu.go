@@ -399,80 +399,93 @@ func (p *CPU) Run(ctx context.Context) error {
 }
 
 func (p *CPU) watchProcesses(ctx context.Context, pfs procfs.FS, matchers []*regexp.Regexp) {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
+	/* 	ticker := time.NewTicker(1 * time.Hour)
+	   	defer ticker.Stop() */
 
 	// @nocommit: cache on start_at
 	unwindTableCache := cache.New()
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
+	/* for {
+	select {
+	case <-ctx.Done():
+		return
+	case <-ticker.C:
+	} */
 
-		procs, err := pfs.AllProcs()
+	procs, err := pfs.AllProcs()
+	if err != nil {
+		level.Error(p.logger).Log("msg", "failed to list processes", "err", err)
+		return
+	}
+
+	pids := []int{}
+	for _, proc := range procs {
+		comm, err := proc.Comm()
 		if err != nil {
-			level.Error(p.logger).Log("msg", "failed to list processes", "err", err)
+			level.Error(p.logger).Log("msg", "failed to get process name", "err", err)
 			continue
 		}
 
-		pids := []int{}
-		for _, proc := range procs {
-			comm, err := proc.Comm()
-			if err != nil {
-				level.Error(p.logger).Log("msg", "failed to get process name", "err", err)
-				continue
-			}
-
-			if comm == "" {
-				continue
-			}
-
-			for _, m := range matchers {
-				if m.MatchString(comm) {
-					level.Info(p.logger).Log("msg", "match found; debugging process", "pid", proc.PID, "comm", comm)
-					pids = append(pids, proc.PID)
-				}
-			}
-		}
-
-		if len(pids) > 0 {
-			level.Debug(p.logger).Log("msg", "updating debug pids map", "pids", fmt.Sprintf("%v", pids))
-			// Only meant to be used for debugging, it is not safe to use in production.
-			if err := p.bpfMaps.setDebugPIDs(pids); err != nil {
-				level.Warn(p.logger).Log("msg", "failed to update debug pids map", "err", err)
-			}
-		} else {
-			level.Debug(p.logger).Log("msg", "no processes matched the provided regex")
-			if err := p.bpfMaps.setDebugPIDs(nil); err != nil {
-				level.Warn(p.logger).Log("msg", "failed to update debug pids map", "err", err)
-			}
+		if comm == "" {
 			continue
 		}
 
-		// Can only be enabled when a debug process name is specified.
-		if p.enableDWARFUnwinding {
-			// Update unwind tables for the given pids.
-			for _, pid := range pids {
-				if _, exists := unwindTableCache.GetIfPresent(pid); exists {
-					continue
-				}
-				level.Info(p.logger).Log("msg", "adding unwind tables", "pid", pid)
-
-				// @nocommit: refactor
-				err := p.addUnwindTableForPid(pid)
-				if err != nil {
-					level.Error(p.logger).Log("msg", "failed to add unwind table", "pid", pid, "err", err)
-					continue
-				}
-
-				unwindTableCache.Put(pid, struct{}{})
+		for _, m := range matchers {
+			if m.MatchString(comm) {
+				level.Info(p.logger).Log("msg", "match found; debugging process", "pid", proc.PID, "comm", comm)
+				pids = append(pids, proc.PID)
 			}
 		}
 	}
+
+	if len(pids) > 0 {
+		level.Debug(p.logger).Log("msg", "updating debug pids map", "pids", fmt.Sprintf("%v", pids))
+		// Only meant to be used for debugging, it is not safe to use in production.
+		if err := p.bpfMaps.setDebugPIDs(pids); err != nil {
+			level.Warn(p.logger).Log("msg", "failed to update debug pids map", "err", err)
+		}
+	} else {
+		level.Debug(p.logger).Log("msg", "no processes matched the provided regex")
+		if err := p.bpfMaps.setDebugPIDs(nil); err != nil {
+			level.Warn(p.logger).Log("msg", "failed to update debug pids map", "err", err)
+		}
+		return
+	}
+
+	// Can only be enabled when a debug process name is specified.
+	if p.enableDWARFUnwinding {
+		// Update unwind tables for the given pids.
+		for _, pid := range pids {
+			if _, exists := unwindTableCache.GetIfPresent(pid); exists {
+				continue
+			}
+
+			executable := fmt.Sprintf("/proc/%d/exe", pid)
+			hasFramePointers, err := unwind.HasFramePointers(executable)
+			if err != nil {
+				level.Info(p.logger).Log("msg", "frame pointer detection failed", "executable", executable, "err", err)
+				continue
+			}
+			if hasFramePointers {
+				fmt.Println("skipping", executable, "has fp")
+				continue
+			}
+
+			level.Info(p.logger).Log("msg", "adding unwind tables", "pid", pid)
+
+			// @nocommit: refactor
+			err = p.addUnwindTableForPid(pid)
+			if err != nil {
+				level.Error(p.logger).Log("msg", "failed to add unwind table", "pid", pid, "err", err)
+				continue
+			}
+
+			unwindTableCache.Put(pid, struct{}{})
+		}
+	}
 }
+
+/* } */
 
 // 1. Find executable sections
 // 2. For each section, generate compact table
