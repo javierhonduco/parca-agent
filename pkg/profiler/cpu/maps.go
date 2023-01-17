@@ -347,11 +347,45 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 
 	////////////////
 
+	if mapping.IsJitted() || mapping.IsSpecial() {
+		var type_ uint64
+		if mapping.IsJitted() {
+			type_ = 1
+		}
+		if mapping.IsSpecial() {
+			type_ = 2
+		}
+
+		fmt.Println("JIT section")
+		// .load_address
+		if err := binary.Write(procInfoBuf, m.byteOrder, mapping.LoadAddr); err != nil {
+			return fmt.Errorf("write mappings .load_address bytes: %w", err)
+		}
+		// .begin
+		if err := binary.Write(procInfoBuf, m.byteOrder, mapping.StartAddr); err != nil {
+			return fmt.Errorf("write mappings .begin bytes: %w", err)
+		}
+		// .end
+		if err := binary.Write(procInfoBuf, m.byteOrder, mapping.EndAddr); err != nil {
+			return fmt.Errorf("write mappings .end bytes: %w", err)
+		}
+		// .executable_id
+		if err := binary.Write(procInfoBuf, m.byteOrder, uint64(0)); err != nil {
+			return fmt.Errorf("write proc info .executable_id bytes: %w", err)
+		}
+		// .type
+		if err := binary.Write(procInfoBuf, m.byteOrder, type_); err != nil {
+			return fmt.Errorf("write proc info .jitted bytes: %w", err)
+		}
+		return nil
+	}
+
 	// Memory mappings
 	fullExecutablePath := path.Join(fmt.Sprintf("/proc/%d/root", pid), mapping.Executable)
 	aslrElegible, err := executable.IsASLRElegible(fullExecutablePath)
 	if err != nil {
-		return fmt.Errorf("ASLR check failed with with: %w", err)
+		// @nocommit: ignore this one.
+		return nil // fmt.Errorf("ASLR check failed with with: %w", err)
 	}
 	adjustedLoadAddress := uint64(0)
 	if mapping.MainObject() {
@@ -403,6 +437,11 @@ func (m *bpfMaps) setUnwindTable(pid int, ut unwind.CompactUnwindTable, mapping 
 	// .executable_id
 	if err := binary.Write(procInfoBuf, m.byteOrder, uint64(foundExecutableId)); err != nil {
 		return fmt.Errorf("write proc info .executable_id bytes: %w", err)
+	}
+
+	// .jitted, here we know it's not jitted.
+	if err := binary.Write(procInfoBuf, m.byteOrder, uint64(0)); err != nil {
+		return fmt.Errorf("write proc info .jitted bytes: %w", err)
 	}
 
 	// =================== UNWIND TABLE ===================

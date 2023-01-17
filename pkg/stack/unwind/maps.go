@@ -57,6 +57,17 @@ func (pm *ExecutableMapping) String() string {
 	return fmt.Sprintf("ExecutableMapping {LoadAddr: 0x%x, StartAddr: 0x%x, EndAddr: 0x%x, Executable:%s}", pm.LoadAddr, pm.StartAddr, pm.EndAddr, pm.Executable)
 }
 
+type ExecutableMappingsList []*ExecutableMapping
+
+func (pm ExecutableMappingsList) HasJitted() bool {
+	for _, execMapping := range pm {
+		if execMapping.IsJitted() {
+			return true
+		}
+	}
+	return false
+}
+
 // executableMappingCount returns the number of executable mappings
 // in the passed `rawMappings`.
 func executableMappingCount(rawMappings []*procfs.ProcMap) uint {
@@ -76,7 +87,7 @@ func executableMappingCount(rawMappings []*procfs.ProcMap) uint {
 // aren't typically loaded in one large executable section, but split in several
 // mappings. For example, the .rodata section, as well as .eh_frame might go in
 // sections without executable permissions, as they aren't needed.
-func ExecutableMappings(rawMappings []*procfs.ProcMap) []*ExecutableMapping {
+func ExecutableMappings(rawMappings []*procfs.ProcMap) ExecutableMappingsList {
 	result := make([]*ExecutableMapping, 0, executableMappingCount(rawMappings))
 	firstSeen := false
 	for idx, rawMapping := range rawMappings {
@@ -93,6 +104,7 @@ func ExecutableMappings(rawMappings []*procfs.ProcMap) []*ExecutableMapping {
 					LoadAddr = uint64(rawMappings[revIdx].StartAddr)
 				}
 			}
+
 			result = append(result, &ExecutableMapping{
 				LoadAddr:   LoadAddr,
 				StartAddr:  uint64(rawMapping.StartAddr),
@@ -100,6 +112,7 @@ func ExecutableMappings(rawMappings []*procfs.ProcMap) []*ExecutableMapping {
 				Executable: rawMapping.Pathname,
 				mainExec:   !firstSeen,
 			})
+
 			firstSeen = true
 		}
 	}

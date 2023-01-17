@@ -230,7 +230,7 @@ func ReadFDEs(path string) (frame.FrameDescriptionEntries, error) {
 }
 
 func BuildUnwindTable(fdes frame.FrameDescriptionEntries) UnwindTable {
-	table := make(UnwindTable, 0)
+	table := make(UnwindTable, 0, 4*len(fdes)) // heuristic
 	for _, fde := range fdes {
 		frameContext := frame.ExecuteDwarfProgram(fde, nil)
 		for insCtx := frameContext.Next(); frameContext.HasNext(); insCtx = frameContext.Next() {

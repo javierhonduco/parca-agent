@@ -1,3 +1,17 @@
+1. Unwind table generation doesn't have to happen if the mappings are cachedLabels
+2. Clean up the code
+3. Add JIT checks?
+4. Refresh PIDs from time to time
+5. Debugging endpoint
+6. Re-do unwind info if shards are full
+
+================
+later
+- don't write all the time
+- reuse buffers
+
+================
+
 1. Read the code
 2. Make it better
 3. Try to improve it
@@ -17,3 +31,6 @@
 perhaps and edge case?
 
 - left 226562 right 250000
+
+
+

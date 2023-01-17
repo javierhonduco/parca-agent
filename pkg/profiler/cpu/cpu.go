@@ -310,16 +310,14 @@ func (p *CPU) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to create maps: %w", err)
 	}
 
-	if debugEnabled {
-		pfs, err := procfs.NewDefaultFS()
-		if err != nil {
-			return fmt.Errorf("failed to create procfs: %w", err)
-		}
-
-		level.Debug(p.logger).Log("msg", "debug process matchers found, starting process watcher")
-		// Update the debug pids map.
-		go p.watchProcesses(ctx, pfs, matchers)
+	pfs, err := procfs.NewDefaultFS()
+	if err != nil {
+		return fmt.Errorf("failed to create procfs: %w", err)
 	}
+
+	level.Debug(p.logger).Log("msg", "debug process matchers found, starting process watcher")
+	// Update the debug pids map.
+	go p.watchProcesses(ctx, pfs, matchers)
 
 	ticker := time.NewTicker(p.profilingDuration)
 	defer ticker.Stop()
@@ -399,91 +397,90 @@ func (p *CPU) Run(ctx context.Context) error {
 }
 
 func (p *CPU) watchProcesses(ctx context.Context, pfs procfs.FS, matchers []*regexp.Regexp) {
-	/* 	ticker := time.NewTicker(1 * time.Hour)
-	   	defer ticker.Stop() */
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
 
 	// @nocommit: cache on start_at
 	unwindTableCache := cache.New()
 
-	/* for {
-	select {
-	case <-ctx.Done():
-		return
-	case <-ticker.C:
-	} */
-
-	procs, err := pfs.AllProcs()
-	if err != nil {
-		level.Error(p.logger).Log("msg", "failed to list processes", "err", err)
-		return
-	}
-
-	pids := []int{}
-	for _, proc := range procs {
-		comm, err := proc.Comm()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		procs, err := pfs.AllProcs()
 		if err != nil {
-			level.Error(p.logger).Log("msg", "failed to get process name", "err", err)
-			continue
+			level.Error(p.logger).Log("msg", "failed to list processes", "err", err)
+			return
 		}
 
-		if comm == "" {
-			continue
-		}
-
-		for _, m := range matchers {
-			if m.MatchString(comm) {
-				level.Info(p.logger).Log("msg", "match found; debugging process", "pid", proc.PID, "comm", comm)
-				pids = append(pids, proc.PID)
-			}
-		}
-	}
-
-	if len(pids) > 0 {
-		level.Debug(p.logger).Log("msg", "updating debug pids map", "pids", fmt.Sprintf("%v", pids))
-		// Only meant to be used for debugging, it is not safe to use in production.
-		if err := p.bpfMaps.setDebugPIDs(pids); err != nil {
-			panic(err)
-			level.Error(p.logger).Log("msg", "failed to update debug pids map", "err", err)
-		}
-	} else {
-		level.Debug(p.logger).Log("msg", "no processes matched the provided regex")
-		if err := p.bpfMaps.setDebugPIDs(nil); err != nil {
-			level.Error(p.logger).Log("msg", "failed to update debug pids map", "err", err)
-		}
-		return
-	}
-
-	count := 0
-	// Can only be enabled when a debug process name is specified.
-	if p.enableDWARFUnwinding {
-		// Update unwind tables for the given pids.
-		for _, pid := range pids {
-			if _, exists := unwindTableCache.GetIfPresent(pid); exists {
-				continue
-			}
-
-			executable := fmt.Sprintf("/proc/%d/exe", pid)
-			hasFramePointers, err := unwind.HasFramePointers(executable)
+		pids := []int{}
+		for _, proc := range procs {
+			comm, err := proc.Comm()
 			if err != nil {
-				level.Info(p.logger).Log("msg", "frame pointer detection failed", "executable", executable, "err", err)
-				continue
-			}
-			if hasFramePointers {
-				fmt.Println("skipping", executable, "has fp")
+				level.Error(p.logger).Log("msg", "failed to get process name", "err", err)
 				continue
 			}
 
-			level.Info(p.logger).Log("msg", "adding unwind tables", "pid", pid)
-
-			// @nocommit: refactor
-			err = p.addUnwindTableForPid(pid)
-			if err != nil {
-				level.Error(p.logger).Log("msg", "failed to add unwind table", "pid", pid, "err", err)
+			if comm == "" {
 				continue
 			}
 
-			unwindTableCache.Put(pid, struct{}{})
-			count++
+			for _, m := range matchers {
+				if m.MatchString(comm) {
+					level.Info(p.logger).Log("msg", "match found; debugging process", "pid", proc.PID, "comm", comm)
+					pids = append(pids, proc.PID)
+				}
+			}
+		}
+
+		if len(pids) > 0 {
+			level.Debug(p.logger).Log("msg", "updating debug pids map", "pids", fmt.Sprintf("%v", pids))
+			// Only meant to be used for debugging, it is not safe to use in production.
+			if err := p.bpfMaps.setDebugPIDs(pids); err != nil {
+				level.Error(p.logger).Log("msg", "failed to update debug pids map", "err", err)
+			}
+		} else {
+			level.Debug(p.logger).Log("msg", "no processes matched the provided regex")
+			if err := p.bpfMaps.setDebugPIDs(nil); err != nil {
+				level.Error(p.logger).Log("msg", "failed to update debug pids map", "err", err)
+			}
+		}
+
+		count := 0
+		// Can only be enabled when a debug process name is specified.
+		if p.enableDWARFUnwinding {
+			// Update unwind tables for the given pids.
+			for _, proc := range procs {
+				pid := proc.PID
+				if _, exists := unwindTableCache.GetIfPresent(pid); exists {
+					continue
+				}
+
+				executable := fmt.Sprintf("/proc/%d/exe", pid)
+				hasFramePointers, err := unwind.HasFramePointers(executable)
+				if err != nil {
+					level.Info(p.logger).Log("msg", "frame pointer detection failed", "executable", executable, "err", err)
+					continue
+				}
+				if hasFramePointers {
+					fmt.Println("skipping", executable, "has fp")
+					continue
+				}
+
+				level.Info(p.logger).Log("msg", "adding unwind tables", "pid", pid)
+
+				// @nocommit: refactor
+				err = p.addUnwindTableForProcess(pid)
+				if err != nil {
+					level.Error(p.logger).Log("msg", "failed to add unwind table", "pid", pid, "err", err)
+					continue
+				}
+
+				unwindTableCache.Put(pid, struct{}{})
+				count++
+			}
 		}
 	}
 }
@@ -496,7 +493,7 @@ func (p *CPU) watchProcesses(ctx context.Context, pfs procfs.FS, matchers []*reg
 // 4. Add map metadata to process
 //
 // @nocommit: later on, table caching
-func (p *CPU) addUnwindTableForPid(pid int) error {
+func (p *CPU) addUnwindTableForProcess(pid int) error {
 	proc, err := procfs.NewProc(pid)
 	if err != nil {
 		return err
@@ -510,9 +507,18 @@ func (p *CPU) addUnwindTableForPid(pid int) error {
 	executableMappings := unwind.ExecutableMappings(mappings)
 	procInfoBuf := new(bytes.Buffer)
 	// Important: this has to be called before addUnwindTableForProcessMapping
+	// .is_jit_compiler
+	var isJitCompiler uint64
+	if executableMappings.HasJitted() {
+		isJitCompiler = 1
+	}
+	if err := binary.Write(procInfoBuf, p.bpfMaps.byteOrder, isJitCompiler); err != nil { // @nocommit
+		panic(fmt.Errorf("write proc_info .is_jit_compiler bytes: %w", err))
+	}
+
 	// .len
 	if err := binary.Write(procInfoBuf, p.bpfMaps.byteOrder, uint64(len(executableMappings))); err != nil { // @nocommit
-		panic(fmt.Errorf("write RBP offset bytes: %w", err))
+		panic(fmt.Errorf("write proc_info .len bytes: %w", err))
 	}
 
 	for _, executableMapping := range executableMappings {
@@ -527,34 +533,40 @@ func (p *CPU) addUnwindTableForPid(pid int) error {
 	return nil
 }
 
-func (p *CPU) addUnwindTableForProcessMapping(pid int, executableMapping *unwind.ExecutableMapping, procInfoBuf *bytes.Buffer) error {
-	fullExecutablePath := path.Join(fmt.Sprintf("/proc/%d/root", pid), executableMapping.Executable)
-	// @nocommit: here we could detect if we already know the buildID and just pass the metadata
+func (p *CPU) addUnwindTableForProcessMapping(pid int, executableMappings *unwind.ExecutableMapping, procInfoBuf *bytes.Buffer) error {
+	var minCoveredPc uint64
+	var maxCoveredPc uint64
+	var compactUnwindTable unwind.CompactUnwindTable
 
-	// 1. Get FDEs
-	fdes, err := unwind.ReadFDEs(fullExecutablePath) // @nocommit: this should accept an ELF file perhaps.
-	if err != nil {
-		return err
+	if !executableMappings.IsJitted() && !executableMappings.IsSpecial() {
+		fullExecutablePath := path.Join(fmt.Sprintf("/proc/%d/root", pid), executableMappings.Executable)
+		// @nocommit: here we could detect if we already know the buildID and just pass the metadata
+
+		// 1. Get FDEs
+		fdes, err := unwind.ReadFDEs(fullExecutablePath) // @nocommit: this should accept an ELF file perhaps.
+		if err != nil {
+			return err
+		}
+
+		if len(fdes) == 0 {
+			return fmt.Errorf("fde was zero")
+		}
+
+		sort.Sort(fdes) // hope this help with efficiency, too
+		minCoveredPc = fdes[0].Begin()
+		maxCoveredPc = fdes[len(fdes)-1].End()
+
+		// 2. Build unwind table
+		unwindTable := unwind.BuildUnwindTable(fdes) // @nocommit: intermediate step
+		sort.Sort(unwindTable)                       // 2.5 Sort @nocommit: perhaps sorting the BPF friendly one will be faster
+		// 3. Get the compact, BPF-friendly representation
+		compactUnwindTable = unwind.CompactUnwindTableRepresentation(unwindTable)
+		// now we have a full compact unwind table that we have to split in different BPF maps.
+		fmt.Println("=> found", len(compactUnwindTable), "unwind entries for", executableMappings.Executable, "low pc", fmt.Sprintf("%x", minCoveredPc), "high pc", fmt.Sprintf("%x", maxCoveredPc)) // @nocommit: remove
 	}
-
-	if len(fdes) == 0 {
-		return fmt.Errorf("fde was zero")
-	}
-
-	sort.Sort(fdes) // hope this help with efficiency, too
-	minCoveredPc := fdes[0].Begin()
-	maxCoveredPc := fdes[len(fdes)-1].End()
-
-	// 2. Build unwind table
-	unwindTable := unwind.BuildUnwindTable(fdes) // @nocommit: intermediate step
-	sort.Sort(unwindTable)                       // 2.5 Sort @nocommit: perhaps sorting the BPF friendly one will be faster
-	// 3. Get the compact, BPF-friendly representation
-	compactUnwindTable := unwind.CompactUnwindTableRepresentation(unwindTable)
-	// now we have a full compact unwind table that we have to split in different BPF maps.
-	fmt.Println("=> found", len(compactUnwindTable), "unwind entries for", executableMapping.Executable, "low pc", fmt.Sprintf("%x", minCoveredPc), "high pc", fmt.Sprintf("%x", maxCoveredPc)) // @nocommit: remove
 
 	// Set unwind table.
-	if err := p.bpfMaps.setUnwindTable(pid, compactUnwindTable, executableMapping, procInfoBuf, minCoveredPc, maxCoveredPc); err != nil {
+	if err := p.bpfMaps.setUnwindTable(pid, compactUnwindTable, executableMappings, procInfoBuf, minCoveredPc, maxCoveredPc); err != nil {
 		panic(fmt.Errorf("setUnwindTable: %w", err))
 	}
 

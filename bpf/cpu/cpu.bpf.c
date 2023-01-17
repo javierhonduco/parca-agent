@@ -130,11 +130,11 @@ typedef struct mapping {
   u64 begin;
   u64 end;
   u64 executable_id;
-  //int shard_count;
-  //int type; // TODO: use -> jit vs non jit
+  u64 type;
 } mapping_t;
 
 typedef struct {
+  u64 is_jit_compiler;
   u64 len;
   mapping_t mappings[MAX_MAPS_PER_PROCESS];
 } process_info_t;
@@ -206,6 +206,7 @@ u32 UNWIND_SHOULD_NEVER_HAPPEN_ERROR = 5;
 u32 UNWIND_PC_NOT_COVERED_ERROR = 6;
 // Keep track of total samples.
 u32 UNWIND_SAMPLES_COUNT = 7;
+u32 UNWIND_JIT_ERRORS = 8;
 
 /*================================ MAPS =====================================*/
 
@@ -247,6 +248,7 @@ DEFINE_COUNTER(UNWIND_UNSUPPORTED_EXPRESSION);
 DEFINE_COUNTER(UNWIND_SHOULD_NEVER_HAPPEN_ERROR);
 DEFINE_COUNTER(UNWIND_CATCHALL_ERROR);
 DEFINE_COUNTER(UNWIND_PC_NOT_COVERED_ERROR);
+DEFINE_COUNTER(UNWIND_JIT_ERRORS);
 
 static void unwind_print_stats() {
   u32 *success_counter = bpf_map_lookup_elem(&percpu_stats, &UNWIND_SUCCESS);
@@ -290,12 +292,19 @@ static void unwind_print_stats() {
     return;
   }
 
+    u32 *jit_errors =
+      bpf_map_lookup_elem(&percpu_stats, &UNWIND_JIT_ERRORS);
+  if (jit_errors == NULL) {
+    return;
+  }
+
   bpf_printk("[[ stats for cpu %d ]]", (int)bpf_get_smp_processor_id());
   bpf_printk("success=%lu", *success_counter);
   bpf_printk("unsup_expression=%lu", *unsup_expression);
   bpf_printk("truncated=%lu", *truncated_counter);
   bpf_printk("catchall=%lu", *catchall_count);
   bpf_printk("never=%lu", *never);
+  bpf_printk("jit_errors=%lu", *jit_errors);
 
   bpf_printk("total_counter=%lu", *total_counter);
   bpf_printk("(not_covered=%lu)", *not_covered_count);
@@ -402,30 +411,45 @@ static __always_inline bool is_debug_enabled_for_pid(int pid) {
   return false;
 }
 
+enum find_unwind_table_return {
+  FIND_UNWIND_SUCCESS = 0,
+  FIND_UNWIND_MAPPING_SHOULD_NEVER_HAPPEN = 1,
+  FIND_UNWIND_MAPPING_EXHAUSTED_SEARCH = 2,
+  FIND_UNWIND_MAPPING_NOT_FOUND = 3,
+  FIND_UNWIND_SHARD_UNSET = 4,
+  FIND_UNWIND_SHARD_EXHAUSTED_SEARCH = 5,
+  FIND_UNWIND_SHARD_NOT_FOUND = 6,
+
+  FIND_UNWIND_JITTED = 100,
+  FIND_UNWIND_SPECIAL = 200,
+};
+
 // Finds the unwind table for a given pid and program counter.
 // Returns NULL if it can't be found, so this function can't be used to detect
 // how should we unwind the native stack for a process. See
 // `has_unwind_information()`.
-static __always_inline shard_info_t *
-find_unwind_table(pid_t pid, u64 pc, u64 *offset) {
+static __always_inline enum find_unwind_table_return
+find_unwind_table(shard_info_t **shard_info, pid_t pid, u64 pc, u64 *offset) {
   process_info_t *proc_info = bpf_map_lookup_elem(&process_info, &pid);
   if (proc_info == NULL) {
     bpf_printk("[error] should never happen");
-    return NULL;
+    return FIND_UNWIND_MAPPING_SHOULD_NEVER_HAPPEN;
   }
 
   u64 executable_id = 0;
   bool found = false;
   u64 load_address = 0;
+  u64 local_type = 0;
 
   // Find the mapping.
   for (int i = 0; i < MAX_MAPS_PER_PROCESS; i++) {
     if (i > proc_info->len) {
-      return NULL;
+      bpf_printk("[info] mapping not found, i (%d) > proc_info->len (%d) pc: %llx", i, proc_info->len, pc);
+      return FIND_UNWIND_MAPPING_EXHAUSTED_SEARCH;
     }
     if (i < 0 || i > MAX_MAPS_PER_PROCESS) {
       bpf_printk("[error] should never happen, verifier");
-      return NULL;
+      return FIND_UNWIND_MAPPING_SHOULD_NEVER_HAPPEN;
     }
 
     // too verbose
@@ -435,6 +459,7 @@ find_unwind_table(pid_t pid, u64 pc, u64 *offset) {
         pc <= proc_info->mappings[i].end) {
       executable_id = proc_info->mappings[i].executable_id;;
       load_address = proc_info->mappings[i].load_address;
+      local_type = proc_info->mappings[i].type;
       // bpf_printk("== mapping found i=%d table_id=%d pc=%llx, begin=%llx, end=%llx", i, table_id, pc, proc_info->mappings[i].begin, proc_info->mappings[i].end);
       found = true;
       break;
@@ -445,9 +470,18 @@ find_unwind_table(pid_t pid, u64 pc, u64 *offset) {
     if (offset != NULL) {
       *offset = load_address;
     }
+
+    if (local_type == 1) {
+      return FIND_UNWIND_JITTED;
+    }
+
+    if (local_type == 2) {
+      return FIND_UNWIND_SPECIAL;
+    }
+
   } else {
     bpf_printk("[warn] :((( no mapping for ip=%llx", pc);
-    return NULL;
+    return FIND_UNWIND_MAPPING_NOT_FOUND;
   }
 
   // undefined behaviour??
@@ -461,17 +495,18 @@ find_unwind_table(pid_t pid, u64 pc, u64 *offset) {
   // Should never happen
   if (shards == NULL) {
     bpf_printk("!!!! shards is null for executable %llu", executable_id);
-    return 0;
+    return FIND_UNWIND_SHARD_NOT_FOUND;
   }
 
   for (int i = 0; i < 20; i++) { // @nocommit change
     if (i > shards->len) {
-      return 0;
+      return FIND_UNWIND_SHARD_EXHAUSTED_SEARCH;
     }
 
     if (shards->shards[i].low_pc <= pc - load_address && pc - load_address <= shards->shards[i].high_pc ) {
       bpf_printk("FOUND SHARD");
-      return &shards->shards[i];
+      *shard_info = &shards->shards[i];
+      return FIND_UNWIND_SUCCESS;
     }
   }
 
@@ -514,7 +549,7 @@ find_unwind_table(pid_t pid, u64 pc, u64 *offset) {
 
   // old bpf_printk("[warn] no unwind table contains PC=%llx", pc);
   bpf_printk("[error] could not find the right shard...");
-  return NULL;
+  return FIND_UNWIND_SHARD_NOT_FOUND;
 }
 
 
@@ -592,10 +627,18 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
     bpf_printk("\tcurrent bp: %llx", unwind_state->bp);
 
     u64 offset = 0;
-    shard_info_t *shard =
-      find_unwind_table(user_pid, unwind_state->ip, &offset);
+    shard_info_t *shard = NULL;
+    enum find_unwind_table_return unwind_table_result =
+      find_unwind_table(&shard, user_pid, unwind_state->ip, &offset);
 
-    if (shard == NULL) {
+    if (unwind_table_result == FIND_UNWIND_JITTED) {
+      bpf_printk("JIT section, stopping");
+      return 1;
+    } else if (unwind_table_result == FIND_UNWIND_SPECIAL) {
+      bpf_printk("special section, stopping");
+      return 1;
+    } else if (shard == NULL) {
+      // improve
       reached_bottom_of_stack = true;
       break;
     }
@@ -649,7 +692,7 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
 
     if (found_rbp_type == RBP_TYPE_REGISTER ||
         found_rbp_type == RBP_TYPE_EXPRESSION) {
-      bpf_printk("\t!!!! frame pointer is %d (register or exp), bailing out",
+      bpf_printk("\t[error] frame pointer is %d (register or exp), bailing out",
                  found_rbp_type);
       BUMP_UNWIND_CATCHALL_ERROR();
       return 1;
@@ -711,6 +754,24 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
                                       // in a 64 bits machine
 
     if (previous_rip == 0) {
+            int user_pid = pid_tgid;
+          process_info_t *proc_info = bpf_map_lookup_elem(&process_info, &user_pid);
+          if (proc_info == NULL) {
+            bpf_printk("[error] should never happen");
+            return 1;
+          }
+
+          if (proc_info->is_jit_compiler) {
+            bpf_printk("[info] rip=0, Section not added, yet");
+            BUMP_UNWIND_JIT_ERRORS();
+            return 1;
+          }
+
+
+
+
+
+
       bpf_printk("[error] previous_rip should not be zero. This can mean that "
                  "the read failed, ret=%d while reading @ %llx.",
                  err, previous_rip_addr);
@@ -770,13 +831,28 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
       BUMP_UNWIND_SUCCESS();
       bpf_printk("yesssss :)");
     } else {
+
+          int user_pid = pid_tgid;
+          process_info_t *proc_info = bpf_map_lookup_elem(&process_info, &user_pid);
+          if (proc_info == NULL) {
+            bpf_printk("[error] should never happen");
+            return 1;
+          }
+
+          if (proc_info->is_jit_compiler) {
+            bpf_printk("[info] Section not added, yet");
+            BUMP_UNWIND_JIT_ERRORS();
+            return 1;
+          }
       // TODO(javierhonduco): The current code doesn't have good support for
       // JIT'ed code, this is something that will be worked on in future
       // iterations.
       bpf_printk("[error] Could not find unwind table and rbp != 0 (%llx). "
-                 "JIT'ed / bug?",
+                 "bug?",
                  unwind_state->bp);
       BUMP_UNWIND_SHOULD_NEVER_HAPPEN_ERROR();
+
+
     }
     return 0;
   } else if (unwind_state->stack.len < MAX_STACK_DEPTH &&
@@ -848,8 +924,9 @@ int profile_cpu(struct bpf_perf_event_data *ctx) {
   if (!has_unwind_info) {
     add_stacks(ctx, pid_tgid, STACK_WALKING_METHOD_FP, NULL);
   } else {
-    shard_info_t *shard =
-        find_unwind_table(user_pid, ctx->regs.ip, NULL);
+    shard_info_t *shard = NULL;
+    enum find_unwind_table_return unwind_table_result = find_unwind_table(&shard, user_pid, ctx->regs.ip, NULL);
+
     if (shard == NULL) {
       bpf_printk("IP not covered. In kernel space / bug? IP %llx)",
                  ctx->regs.ip);
