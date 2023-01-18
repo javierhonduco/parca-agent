@@ -9,7 +9,6 @@ require (
 	github.com/cespare/xxhash/v2 v2.2.0
 	github.com/cilium/ebpf v0.9.3
 	github.com/common-nighthawk/go-figure v0.0.0-20210622060536-734e95fb86be
-	github.com/coreos/go-semver v0.3.0
 	github.com/coreos/go-systemd/v22 v22.5.0
 	github.com/docker/docker v20.10.22+incompatible
 	github.com/dustin/go-humanize v1.0.0
@@ -20,6 +19,7 @@ require (
 	github.com/google/pprof v0.0.0-20221219190121-3cb0bae90811
 	github.com/grpc-ecosystem/go-grpc-prometheus v1.2.0
 	github.com/hashicorp/go-multierror v1.1.1
+	github.com/hashicorp/go-version v1.6.0
 	github.com/ianlancetaylor/demangle v0.0.0-20220517205856-0058ec4f073c
 	github.com/keybase/go-ps v0.0.0-20190827175125-91aafc93ba19
 	github.com/klauspost/compress v1.15.14

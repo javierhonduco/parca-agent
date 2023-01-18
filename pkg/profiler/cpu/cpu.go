@@ -23,6 +23,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
 	"path"
 	"regexp"
 	"runtime"
@@ -188,6 +189,10 @@ func bpfCheck() error {
 	return result.ErrorOrNil()
 }
 
+func (p *CPU) debugProcesses() bool {
+	return len(p.debugProcessNames) > 0
+}
+
 func (p *CPU) Run(ctx context.Context) error {
 	level.Debug(p.logger).Log("msg", "starting cpu profiler")
 
@@ -213,7 +218,7 @@ func (p *CPU) Run(ctx context.Context) error {
 	level.Debug(p.logger).Log("msg", "actual memory locked rlimit", "cur", profiler.HumanizeRLimit(rLimit.Cur), "max", profiler.HumanizeRLimit(rLimit.Max))
 
 	var matchers []*regexp.Regexp
-	if len(p.debugProcessNames) > 0 {
+	if p.debugProcesses() {
 		level.Info(p.logger).Log("msg", "process names specified, debugging processes", "matchers", strings.Join(p.debugProcessNames, ", "))
 		for _, exp := range p.debugProcessNames {
 			regex, err := regexp.Compile(exp)
@@ -409,51 +414,55 @@ func (p *CPU) watchProcesses(ctx context.Context, pfs procfs.FS, matchers []*reg
 			return
 		case <-ticker.C:
 		}
-		procs, err := pfs.AllProcs()
+		allProcs, err := pfs.AllProcs()
 		if err != nil {
 			level.Error(p.logger).Log("msg", "failed to list processes", "err", err)
 			return
 		}
 
 		pids := []int{}
-		for _, proc := range procs {
-			comm, err := proc.Comm()
-			if err != nil {
-				level.Error(p.logger).Log("msg", "failed to get process name", "err", err)
-				continue
-			}
+		if p.debugProcesses() {
+			for _, proc := range allProcs {
+				comm, err := proc.Comm()
+				if err != nil {
+					level.Error(p.logger).Log("msg", "failed to get process name", "err", err)
+					continue
+				}
 
-			if comm == "" {
-				continue
-			}
+				if comm == "" {
+					continue
+				}
 
-			for _, m := range matchers {
-				if m.MatchString(comm) {
-					level.Info(p.logger).Log("msg", "match found; debugging process", "pid", proc.PID, "comm", comm)
-					pids = append(pids, proc.PID)
+				for _, m := range matchers {
+					if m.MatchString(comm) {
+						level.Info(p.logger).Log("msg", "match found; debugging process", "pid", proc.PID, "comm", comm)
+						pids = append(pids, proc.PID)
+					}
 				}
 			}
-		}
 
-		if len(pids) > 0 {
-			level.Debug(p.logger).Log("msg", "updating debug pids map", "pids", fmt.Sprintf("%v", pids))
-			// Only meant to be used for debugging, it is not safe to use in production.
-			if err := p.bpfMaps.setDebugPIDs(pids); err != nil {
-				level.Error(p.logger).Log("msg", "failed to update debug pids map", "err", err)
+			if len(pids) > 0 {
+				level.Debug(p.logger).Log("msg", "updating debug pids map", "pids", fmt.Sprintf("%v", pids))
+				// Only meant to be used for debugging, it is not safe to use in production.
+				if err := p.bpfMaps.setDebugPIDs(pids); err != nil {
+					level.Error(p.logger).Log("msg", "failed to update debug pids map", "err", err)
+				}
+			} else {
+				level.Debug(p.logger).Log("msg", "no processes matched the provided regex")
+				if err := p.bpfMaps.setDebugPIDs(nil); err != nil {
+					level.Error(p.logger).Log("msg", "failed to update debug pids map", "err", err)
+				}
 			}
 		} else {
-			level.Debug(p.logger).Log("msg", "no processes matched the provided regex")
-			if err := p.bpfMaps.setDebugPIDs(nil); err != nil {
-				level.Error(p.logger).Log("msg", "failed to update debug pids map", "err", err)
+			for _, proc := range allProcs {
+				pids = append(pids, proc.PID)
 			}
 		}
 
 		count := 0
-		// Can only be enabled when a debug process name is specified.
 		if p.enableDWARFUnwinding {
 			// Update unwind tables for the given pids.
-			for _, proc := range procs {
-				pid := proc.PID
+			for _, pid := range pids {
 				if _, exists := unwindTableCache.GetIfPresent(pid); exists {
 					continue
 				}
@@ -461,7 +470,11 @@ func (p *CPU) watchProcesses(ctx context.Context, pfs procfs.FS, matchers []*reg
 				executable := fmt.Sprintf("/proc/%d/exe", pid)
 				hasFramePointers, err := unwind.HasFramePointers(executable)
 				if err != nil {
-					level.Info(p.logger).Log("msg", "frame pointer detection failed", "executable", executable, "err", err)
+					// It can not exist as reading procfs is racy.
+					// meh: os.IsNotExist(errors.Unwrap(errors.Unwrap(err)))
+					if !errors.Is(err, os.ErrNotExist) {
+						level.Info(p.logger).Log("msg", "frame pointer detection failed", "executable", executable, "err", err)
+					}
 					continue
 				}
 				if hasFramePointers {
@@ -565,7 +578,21 @@ func (p *CPU) addUnwindTableForProcessMapping(pid int, executableMappings *unwin
 		fmt.Println("=> found", len(compactUnwindTable), "unwind entries for", executableMappings.Executable, "low pc", fmt.Sprintf("%x", minCoveredPc), "high pc", fmt.Sprintf("%x", maxCoveredPc)) // @nocommit: remove
 	}
 
+	// @nocommit: recover from panic
 	// Set unwind table.
+	/* panic: setUnwindTable: update unwind tables: failed to update map unwind_tables: bad address
+
+	goroutine 155 [running]:
+	github.com/parca-dev/parca-agent/pkg/profiler/cpu.(*CPU).addUnwindTableForProcessMapping(0xc00039c000?, 0xc00075fb60?, 0xc000697f50?, 0x3268b18?)
+	        github.com/parca-dev/parca-agent/pkg/profiler/cpu/cpu.go:570 +0x4f4
+	github.com/parca-dev/parca-agent/pkg/profiler/cpu.(*CPU).addUnwindTableForProcess(0xc00039c000, 0x1)
+	        github.com/parca-dev/parca-agent/pkg/profiler/cpu/cpu.go:526 +0x192
+	github.com/parca-dev/parca-agent/pkg/profiler/cpu.(*CPU).watchProcesses(0xc00039c000, {0x2294e98, 0xc000660270}, {{0x1fa01ef?, 0x2294df0?}}, {0x0, 0x0, 0xc0002081e0?})
+	        github.com/parca-dev/parca-agent/pkg/profiler/cpu/cpu.go:475 +0xb5b
+	created by github.com/parca-dev/parca-agent/pkg/profiler/cpu.(*CPU).Run
+	        github.com/parca-dev/parca-agent/pkg/profiler/cpu/cpu.go:320 +0x116a
+	[javierhonduco@fedora parca-agent]$
+	*/
 	if err := p.bpfMaps.setUnwindTable(pid, compactUnwindTable, executableMappings, procInfoBuf, minCoveredPc, maxCoveredPc); err != nil {
 		panic(fmt.Errorf("setUnwindTable: %w", err))
 	}
