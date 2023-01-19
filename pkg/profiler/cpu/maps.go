@@ -22,8 +22,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
 	"path"
 	"sort"
+	"time"
 	"unsafe"
 
 	"github.com/parca-dev/parca-agent/pkg/buildid"
@@ -253,11 +255,12 @@ func (m *bpfMaps) readUserStackWithDwarf(userStackID int32, stack *combinedStack
 	}
 
 	userStack := stack[:stackDepth]
-	for i, addr := range dwarfStack.Addrs {
-		if i >= stackDepth || i >= int(dwarfStack.Len) || addr == 0 {
-			break
+	for i := 0; i < stackDepth; i++ {
+		if i < int(dwarfStack.Len) {
+			userStack[i] = dwarfStack.Addrs[i]
+		} else {
+			userStack[i] = 0
 		}
-		userStack[i] = addr
 	}
 
 	return nil
@@ -368,32 +371,32 @@ func (m *bpfMaps) generateCompactUnwindTable(fullExecutablePath string, mapping 
 
 func (m *bpfMaps) writeUnwindTableRow(buffer *bytes.Buffer, row unwind.CompactUnwindTableRow) error {
 	// .pc
-	if err := binary.Write(m.unwindInfoBuf, m.byteOrder, row.Pc()); err != nil {
+	if err := binary.Write(buffer, m.byteOrder, row.Pc()); err != nil {
 		return fmt.Errorf("write unwind table .pc bytes: %w", err)
 	}
 
 	// .__reserved_do_not_use
-	if err := binary.Write(m.unwindInfoBuf, m.byteOrder, row.ReservedDoNotUse()); err != nil {
+	if err := binary.Write(buffer, m.byteOrder, row.ReservedDoNotUse()); err != nil {
 		return fmt.Errorf("write unwind table __reserved_do_not_use bytes: %w", err)
 	}
 
 	// .cfa_type
-	if err := binary.Write(m.unwindInfoBuf, m.byteOrder, row.CfaType()); err != nil {
+	if err := binary.Write(buffer, m.byteOrder, row.CfaType()); err != nil {
 		return fmt.Errorf("write unwind table cfa_type bytes: %w", err)
 	}
 
 	// .rbp_type
-	if err := binary.Write(m.unwindInfoBuf, m.byteOrder, row.RbpType()); err != nil {
+	if err := binary.Write(buffer, m.byteOrder, row.RbpType()); err != nil {
 		return fmt.Errorf("write unwind table rbp_type bytes: %w", err)
 	}
 
 	// .cfa_offset
-	if err := binary.Write(m.unwindInfoBuf, m.byteOrder, row.CfaOffset()); err != nil {
+	if err := binary.Write(buffer, m.byteOrder, row.CfaOffset()); err != nil {
 		return fmt.Errorf("write unwind table cfa_offset bytes: %w", err)
 	}
 
 	// .rbp_offset
-	if err := binary.Write(m.unwindInfoBuf, m.byteOrder, row.RbpOffset()); err != nil {
+	if err := binary.Write(buffer, m.byteOrder, row.RbpOffset()); err != nil {
 		return fmt.Errorf("write unwind table rbp_offset bytes: %w", err)
 	}
 	return nil
@@ -424,22 +427,60 @@ func (m *bpfMaps) writeMapping(procInfoBuf *bytes.Buffer, loadAddress uint64, st
 	return nil
 }
 
+func (m *bpfMaps) getMappingId(buildId string) (uint64, bool) {
+	_, alreadySeenMapping := m.buildIdMapping[buildId]
+	if alreadySeenMapping {
+		fmt.Println("-> caching - seen this mapping before")
+		m.referencedMappings += 1
+	} else {
+		fmt.Println("-> caching - new mapping")
+
+		m.buildIdMapping[buildId] = m.executableId
+	}
+
+	return m.buildIdMapping[buildId], alreadySeenMapping
+}
+
+func (m *bpfMaps) PersistUnwindTable() error {
+
+	// ==================== set unwind table =================
+	// @nocommit: only update when needed.
+
+	totalRows := m.unwindInfoBuf.Len() / 16
+	fmt.Println("unwind rows", totalRows)
+	shardIndex := uint64(m.shardIndex)
+	var err error
+	for i := 0; i < 100; i++ {
+		err = m.unwindTables.Update(unsafe.Pointer(&shardIndex), unsafe.Pointer(&m.unwindInfoBuf.Bytes()[0]))
+		if err == nil {
+			fmt.Println("~~ worked:, rows:", totalRows, "try:", i)
+			return nil
+		} else {
+			fmt.Println("~~ failed:", err, "rows:", totalRows, "try:", i)
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+
+	return fmt.Errorf("update unwind tables: %w", err)
+}
+
 // setUnwindTable updates the unwind tables with the given unwind table.
 func (m *bpfMaps) setUnwindTable(pid int, mapping *unwind.ExecutableMapping, procInfoBuf *bytes.Buffer) error {
 	fmt.Println("========================================================================================")
 	fmt.Println("setUnwindTable called (total shards:", m.shardIndex, ", total entries:", m.totalEntries, ")")
 	fmt.Println("========================================================================================")
 
+	// Deal with mappings that are not filed backed.
 	if mapping.IsNotFileBacked() {
 		var type_ uint64
 		if mapping.IsJitted() {
+			fmt.Println("JIT section")
 			type_ = 1
 		}
 		if mapping.IsSpecial() {
+			fmt.Println("Special section")
 			type_ = 2
 		}
-
-		fmt.Println("JIT section")
 
 		err := m.writeMapping(procInfoBuf, mapping.LoadAddr, mapping.StartAddr, mapping.EndAddr, uint64(0), type_)
 		if err != nil {
@@ -448,12 +489,15 @@ func (m *bpfMaps) setUnwindTable(pid int, mapping *unwind.ExecutableMapping, pro
 		return nil
 	}
 
+	// Deal with mappings that are backed by a file.
 	fullExecutablePath := path.Join(fmt.Sprintf("/proc/%d/root", pid), mapping.Executable)
 
 	elfFile, err := elf.Open(fullExecutablePath)
 	if err != nil {
-		// handle return fmt.Errorf("failed opening elf file %s: %w", fullExecutablePath, err)
-		return nil
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
 	}
 	buildId, err := buildid.BuildID(&buildid.ElfFile{File: elfFile, Path: fullExecutablePath})
 	if err != nil {
@@ -473,22 +517,11 @@ func (m *bpfMaps) setUnwindTable(pid int, mapping *unwind.ExecutableMapping, pro
 		adjustedLoadAddress = mapping.LoadAddr
 	}
 
-	fmt.Println("[info] adding memory mappings in for executable with ID", m.executableId, "buildId", buildId)
+	fmt.Println("[info] adding memory mappings in for executable with ID", m.executableId, "buildId", buildId, "exec", mapping.Executable)
 
 	// =================== MAPPINGS ===================
 
-	_, foundMapping := m.buildIdMapping[buildId]
-	if foundMapping {
-		fmt.Println("-> caching - seen this mapping before")
-		m.referencedMappings += 1
-	} else {
-		fmt.Println("-> caching - new mapping")
-
-		m.buildIdMapping[buildId] = m.executableId
-	}
-
-	// bit silly
-	foundExecutableId := m.buildIdMapping[buildId]
+	foundExecutableId, mappingAlreadySeen := m.getMappingId(buildId)
 
 	err = m.writeMapping(procInfoBuf, adjustedLoadAddress, mapping.StartAddr, mapping.EndAddr, uint64(foundExecutableId), uint64(0))
 	if err != nil {
@@ -513,7 +546,7 @@ func (m *bpfMaps) setUnwindTable(pid int, mapping *unwind.ExecutableMapping, pro
 		}
 	}
 
-	if !foundMapping {
+	if !mappingAlreadySeen {
 
 		unwindShardsKeyBuf := new(bytes.Buffer)
 		unwindShardsValBuf := new(bytes.Buffer)
@@ -618,25 +651,13 @@ func (m *bpfMaps) setUnwindTable(pid int, mapping *unwind.ExecutableMapping, pro
 				}
 			}
 
-			// ==================== set unwind table =================
-			// @nocommit: only update when needed.
-
-			shardIndex := uint64(m.shardIndex)
-			fmt.Println("unwind rows", m.unwindInfoBuf.Len()/16)
-			err := m.unwindTables.Update(unsafe.Pointer(&shardIndex), unsafe.Pointer(&m.unwindInfoBuf.Bytes()[0]))
-
-			if err != nil {
-				/* if strings.Contains(err.Error(), "bad address") {
-					panic("bad address")
-				} */
-				panic(err)
-			}
-			//
-			//return fmt.Errorf("update unwind tables: %w", err)
-
 			// Need a new shard?
 			if availableSpace() == 0 {
 				fmt.Println("run out of space in the 'live' shard, creating a new one")
+				err := m.PersistUnwindTable()
+				if err != nil {
+					panic(err)
+				}
 				m.shardIndex++
 				m.unwindInfoBuf.Reset() // @nocommit is it stored??
 				m.lowIndex = 0
@@ -644,7 +665,7 @@ func (m *bpfMaps) setUnwindTable(pid int, mapping *unwind.ExecutableMapping, pro
 
 				if m.shardIndex == unwindTableShardCount {
 					fmt.Println(m.buildIdMapping)
-					panic("Not enough shards - this is not implemented but we should deal with this")
+					fmt.Println("Not enough shards - this is not implemented but we should deal with this")
 				}
 			}
 

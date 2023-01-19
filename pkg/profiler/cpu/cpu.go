@@ -457,24 +457,29 @@ func (p *CPU) watchProcesses(ctx context.Context, pfs procfs.FS, matchers []*reg
 			}
 		}
 
+		fmt.Println("=========== about to call enableDWARFUnwinding")
+
 		count := 0
 		if p.enableDWARFUnwinding {
 			// Update unwind tables for the given pids.
 			for _, pid := range pids {
 				if _, exists := unwindTableCache.GetIfPresent(pid); exists {
+					// TODO(javierhonduco): Expire cache on pid recycling or mappings changes.
+					fmt.Println("already cached")
 					continue
 				}
 
 				executable := fmt.Sprintf("/proc/%d/exe", pid)
 				hasFramePointers, err := unwind.HasFramePointers(executable)
 				if err != nil {
-					// It can not exist as reading procfs is racy.
-					// meh: os.IsNotExist(errors.Unwrap(errors.Unwrap(err)))
+					// It may not exist as reading procfs is racy.
 					if !errors.Is(err, os.ErrNotExist) {
-						level.Info(p.logger).Log("msg", "frame pointer detection failed", "executable", executable, "err", err)
+						level.Error(p.logger).Log("msg", "frame pointer detection failed", "executable", executable, "err", err)
+						continue
 					}
-					continue
+					fmt.Println("HasFramePointers failed")
 				}
+
 				if hasFramePointers {
 					fmt.Println("skipping", executable, "has fp")
 					continue
@@ -482,7 +487,6 @@ func (p *CPU) watchProcesses(ctx context.Context, pfs procfs.FS, matchers []*reg
 
 				level.Info(p.logger).Log("msg", "adding unwind tables", "pid", pid)
 
-				// @nocommit: refactor
 				err = p.addUnwindTableForProcess(pid)
 				if err != nil {
 					level.Error(p.logger).Log("msg", "failed to add unwind table", "pid", pid, "err", err)
@@ -492,11 +496,18 @@ func (p *CPU) watchProcesses(ctx context.Context, pfs procfs.FS, matchers []*reg
 				unwindTableCache.Put(pid, struct{}{})
 				count++
 			}
+
+			// Must be called after calling `addUnwindTableForProcess`, as it's possible
+			// that the current in-memory unwind table shard hasn't been written to the
+			// map.
+			// TODO: have a dirty flag.
+			err := p.bpfMaps.PersistUnwindTable()
+			if err != nil {
+				panic(err)
+			}
 		}
 	}
 }
-
-/* } */
 
 // 1. Find executable sections
 // 2. For each section, generate compact table

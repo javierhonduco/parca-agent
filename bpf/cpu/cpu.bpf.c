@@ -304,7 +304,7 @@ static void unwind_print_stats() {
   bpf_printk("truncated=%lu", *truncated_counter);
   bpf_printk("catchall=%lu", *catchall_count);
   bpf_printk("never=%lu", *never);
-  bpf_printk("jit_errors=%lu", *jit_errors);
+  bpf_printk("jit_failure=%lu", *jit_errors);
 
   bpf_printk("total_counter=%lu", *total_counter);
   bpf_printk("(not_covered=%lu)", *not_covered_count);
