@@ -15,6 +15,8 @@
 package unwind
 
 import (
+	"errors"
+	"os"
 	"testing"
 
 	"github.com/prometheus/procfs"
@@ -23,14 +25,14 @@ import (
 
 func TestEmptyMappingsWorks(t *testing.T) {
 	rawMaps := []*procfs.ProcMap{}
-	result := ExecutableMappings(rawMaps)
-	require.Equal(t, []*ExecutableMapping{}, result)
+	result := ListExecutableMappings(rawMaps)
+	require.Equal(t, ExecutableMappings{}, result)
 }
 
 func TestMappingsWorks(t *testing.T) {
 	rawMaps := []*procfs.ProcMap{{StartAddr: 0x0, EndAddr: 0x100, Perms: &procfs.ProcMapPermissions{Execute: true}, Pathname: "./my_executable"}}
-	result := ExecutableMappings(rawMaps)
-	require.Equal(t, []*ExecutableMapping{
+	result := ListExecutableMappings(rawMaps)
+	require.Equal(t, ExecutableMappings{
 		{StartAddr: 0x0, EndAddr: 0x100, Executable: "./my_executable", mainExec: true},
 	}, result)
 	require.False(t, result[0].IsSpecial())
@@ -43,7 +45,7 @@ func TestMappingsWithSplitSectionsWorks(t *testing.T) {
 		{StartAddr: 0x200, EndAddr: 0x300, Perms: &procfs.ProcMapPermissions{Execute: true}, Pathname: "./my_executable"},
 		{StartAddr: 0x300, EndAddr: 0x400, Perms: &procfs.ProcMapPermissions{Execute: true}, Pathname: "libc"},
 	}
-	result := ExecutableMappings(rawMaps)
+	result := ListExecutableMappings(rawMaps)
 	require.Equal(t, &ExecutableMapping{LoadAddr: 0x0, StartAddr: 0x200, EndAddr: 0x300, Executable: "./my_executable", mainExec: true}, result[0])
 }
 
@@ -53,26 +55,45 @@ func TestMappingsWithJittedSectionsWorks(t *testing.T) {
 		{StartAddr: 0x100, EndAddr: 0x200, Perms: &procfs.ProcMapPermissions{Write: true}, Pathname: "./my_executable"},
 		{StartAddr: 0x200, EndAddr: 0x300, Perms: &procfs.ProcMapPermissions{Execute: true}, Pathname: ""},
 	}
-	result := ExecutableMappings(rawMaps)
+	result := ListExecutableMappings(rawMaps)
 	require.Equal(t, &ExecutableMapping{LoadAddr: 0x0, StartAddr: 0x200, EndAddr: 0x300, Executable: "", mainExec: true}, result[0])
 }
 
-func TestMappingsJitDetectionWorks(t *testing.T) {
+func TestMappingsJitSectionDetectionWorks(t *testing.T) {
 	rawMaps := []*procfs.ProcMap{
 		{StartAddr: 0x0, EndAddr: 0x100, Perms: &procfs.ProcMapPermissions{Execute: true}, Pathname: "./my_executable"},
 		{StartAddr: 0x100, EndAddr: 0x200, Perms: &procfs.ProcMapPermissions{Execute: true}},
 	}
-	result := ExecutableMappings(rawMaps)
+	result := ListExecutableMappings(rawMaps)
+	require.True(t, result.HasJitted())
+}
+
+func TestMappingsIsNotFileBackedWorks(t *testing.T) {
+	rawMaps := []*procfs.ProcMap{
+		{StartAddr: 0x0, EndAddr: 0x100, Perms: &procfs.ProcMapPermissions{Execute: true}, Pathname: "./my_executable"},
+		{StartAddr: 0x100, EndAddr: 0x200, Perms: &procfs.ProcMapPermissions{Execute: true}},
+	}
+	result := ListExecutableMappings(rawMaps)
+	require.False(t, result[0].IsNotFileBacked())
+	require.True(t, result[1].IsNotFileBacked())
+}
+
+func TestMappingJitDetectionWorks(t *testing.T) {
+	rawMaps := []*procfs.ProcMap{
+		{StartAddr: 0x0, EndAddr: 0x100, Perms: &procfs.ProcMapPermissions{Execute: true}, Pathname: "./my_executable"},
+		{StartAddr: 0x100, EndAddr: 0x200, Perms: &procfs.ProcMapPermissions{Execute: true}},
+	}
+	result := ListExecutableMappings(rawMaps)
 	require.Equal(t, 2, len(result))
 	require.False(t, result[0].IsJitted())
 	require.True(t, result[1].IsJitted())
 }
 
-func TestMappingsSpecialSectionDetectionWorks(t *testing.T) {
+func TestMappingSpecialSectionDetectionWorks(t *testing.T) {
 	rawMaps := []*procfs.ProcMap{
 		{StartAddr: 0x0, EndAddr: 0x100, Perms: &procfs.ProcMapPermissions{Execute: true}, Pathname: "[vdso]"},
 	}
-	result := ExecutableMappings(rawMaps)
+	result := ListExecutableMappings(rawMaps)
 	require.Equal(t, 1, len(result))
 	require.True(t, result[0].IsSpecial())
 }
@@ -91,16 +112,22 @@ func TestExecutableMappingCountWorks(t *testing.T) {
 	require.Equal(t, uint(2), executableMappingCount(rawMaps))
 }
 
-/*
 func TestAllProcesses(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("This test requires root")
+	}
+
 	procs, err := procfs.AllProcs()
 	require.NoError(t, err)
 
 	for _, proc := range procs {
 		mappings, err := proc.ProcMaps()
-		require.NoError(t, err)
-		_ = ExecutableMappings(mappings)
+		if !errors.Is(err, os.ErrNotExist) {
+			require.NoError(t, err)
+		}
+		if err == nil {
+			_ = ListExecutableMappings(mappings)
+		}
 	}
 
 }
-*/
