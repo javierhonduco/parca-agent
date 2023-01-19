@@ -545,22 +545,6 @@ func (p *CPU) addUnwindTableForProcess(pid int) error {
 }
 
 func (p *CPU) addUnwindTableForProcessMapping(pid int, executableMappings *unwind.ExecutableMapping, procInfoBuf *bytes.Buffer) error {
-
-	// @nocommit: recover from panic
-	// Set unwind table.
-	/* panic: setUnwindTable: update unwind tables: failed to update map unwind_tables: bad address
-
-	goroutine 155 [running]:
-	github.com/parca-dev/parca-agent/pkg/profiler/cpu.(*CPU).addUnwindTableForProcessMapping(0xc00039c000?, 0xc00075fb60?, 0xc000697f50?, 0x3268b18?)
-	        github.com/parca-dev/parca-agent/pkg/profiler/cpu/cpu.go:570 +0x4f4
-	github.com/parca-dev/parca-agent/pkg/profiler/cpu.(*CPU).addUnwindTableForProcess(0xc00039c000, 0x1)
-	        github.com/parca-dev/parca-agent/pkg/profiler/cpu/cpu.go:526 +0x192
-	github.com/parca-dev/parca-agent/pkg/profiler/cpu.(*CPU).watchProcesses(0xc00039c000, {0x2294e98, 0xc000660270}, {{0x1fa01ef?, 0x2294df0?}}, {0x0, 0x0, 0xc0002081e0?})
-	        github.com/parca-dev/parca-agent/pkg/profiler/cpu/cpu.go:475 +0xb5b
-	created by github.com/parca-dev/parca-agent/pkg/profiler/cpu.(*CPU).Run
-	        github.com/parca-dev/parca-agent/pkg/profiler/cpu/cpu.go:320 +0x116a
-	[javierhonduco@fedora parca-agent]$
-	*/
 	if err := p.bpfMaps.setUnwindTable(pid, executableMappings, procInfoBuf); err != nil {
 		panic(fmt.Errorf("setUnwindTable: %w", err))
 	}

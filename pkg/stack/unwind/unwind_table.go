@@ -250,6 +250,27 @@ func BuildUnwindTable(fdes frame.FrameDescriptionEntries) UnwindTable {
 	return table
 }
 
+func BuildCompactUnwindTable(fdes frame.FrameDescriptionEntries) CompactUnwindTable {
+	table := make(CompactUnwindTable, 0, 4*len(fdes)) // heuristic
+	for _, fde := range fdes {
+		frameContext := frame.ExecuteDwarfProgram(fde, nil)
+		for insCtx := frameContext.Next(); frameContext.HasNext(); insCtx = frameContext.Next() {
+			row := unwindTableRow(insCtx)
+			compactRowElements := rowToCompactRow(row)
+			compactRow := CompactUnwindTableRow{
+				pc:                    row.Loc,
+				__reserved_do_not_use: uint16(0),
+				cfa_type:              compactRowElements.CfaRegister,
+				rbp_type:              compactRowElements.RbpRegister,
+				cfa_offset:            compactRowElements.CfaOffset,
+				rbp_offset:            compactRowElements.RbpOffset,
+			}
+			table = append(table, compactRow)
+		}
+	}
+	return table
+}
+
 // @nocommit: copied from BPF, add note on ABI.
 type CompactUnwindTableRow struct {
 	pc                    uint64
@@ -286,6 +307,10 @@ func (cutr *CompactUnwindTableRow) RbpOffset() int16 {
 
 type CompactUnwindTable []CompactUnwindTableRow
 
+func (t CompactUnwindTable) Len() int           { return len(t) }
+func (t CompactUnwindTable) Less(i, j int) bool { return t[i].pc < t[j].pc }
+func (t CompactUnwindTable) Swap(i, j int)      { t[i], t[j] = t[j], t[i] }
+
 type CompactRowResult struct {
 	CfaRegister uint8
 	RbpRegister uint8
@@ -294,7 +319,7 @@ type CompactRowResult struct {
 }
 
 // @nocommit: improve name
-func rowToCompactRow(row UnwindTableRow) CompactRowResult {
+func rowToCompactRow(row *UnwindTableRow) CompactRowResult {
 	var CfaRegister uint8
 	var RbpRegister uint8
 	var CfaOffset int16
@@ -341,7 +366,7 @@ func CompactUnwindTableRepresentation(unwindTable UnwindTable) CompactUnwindTabl
 	compactTable := make(CompactUnwindTable, 0)
 
 	for _, row := range unwindTable {
-		compactRowElements := rowToCompactRow(row)
+		compactRowElements := rowToCompactRow(&row)
 		compactRow := CompactUnwindTableRow{
 			pc:                    row.Loc,
 			__reserved_do_not_use: uint16(0),

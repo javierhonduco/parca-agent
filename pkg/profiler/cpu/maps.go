@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"path"
 	"sort"
-	"strings"
 	"unsafe"
 
 	"github.com/parca-dev/parca-agent/pkg/buildid"
@@ -357,10 +356,10 @@ func (m *bpfMaps) generateCompactUnwindTable(fullExecutablePath string, mapping 
 	maxCoveredPc = fdes[len(fdes)-1].End()
 
 	// 2. Build unwind table
-	unwindTable := unwind.BuildUnwindTable(fdes) // @nocommit: intermediate step
-	sort.Sort(unwindTable)                       // 2.5 Sort @nocommit: perhaps sorting the BPF friendly one will be faster
 	// 3. Get the compact, BPF-friendly representation
-	ut = unwind.CompactUnwindTableRepresentation(unwindTable)
+	ut = unwind.BuildCompactUnwindTable(fdes)
+	sort.Sort(ut) // 2.5 Sort @nocommit: perhaps sorting the BPF friendly one will be faster
+
 	// now we have a full compact unwind table that we have to split in different BPF maps.
 	fmt.Println("=> found", len(ut), "unwind entries for", mapping.Executable, "low pc", fmt.Sprintf("%x", minCoveredPc), "high pc", fmt.Sprintf("%x", maxCoveredPc)) // @nocommit: remove
 
@@ -621,23 +620,19 @@ func (m *bpfMaps) setUnwindTable(pid int, mapping *unwind.ExecutableMapping, pro
 
 			// ==================== set unwind table =================
 			// @nocommit: only update when needed.
-			{
-				var this_error error
-				shardIndex := uint64(m.shardIndex)
-				err := m.unwindTables.Update(unsafe.Pointer(&shardIndex), unsafe.Pointer(&m.unwindInfoBuf.Bytes()[0]))
-				this_error = err
-				for this_error != nil {
-					if strings.Contains(err.Error(), "bad address") {
-						fmt.Println("bad address, retrying...")
-						//panic("bad address")
-						// retry
-						this_error = m.unwindTables.Update(unsafe.Pointer(&shardIndex), unsafe.Pointer(&m.unwindInfoBuf.Bytes()[0]))
-						// /retry
-					}
-					//panic(err)
-					//return fmt.Errorf("update unwind tables: %w", err)
-				}
+
+			shardIndex := uint64(m.shardIndex)
+			fmt.Println("unwind rows", m.unwindInfoBuf.Len()/16)
+			err := m.unwindTables.Update(unsafe.Pointer(&shardIndex), unsafe.Pointer(&m.unwindInfoBuf.Bytes()[0]))
+
+			if err != nil {
+				/* if strings.Contains(err.Error(), "bad address") {
+					panic("bad address")
+				} */
+				panic(err)
 			}
+			//
+			//return fmt.Errorf("update unwind tables: %w", err)
 
 			// Need a new shard?
 			if availableSpace() == 0 {
