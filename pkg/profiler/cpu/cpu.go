@@ -24,10 +24,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path"
 	"regexp"
 	"runtime"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -547,36 +545,6 @@ func (p *CPU) addUnwindTableForProcess(pid int) error {
 }
 
 func (p *CPU) addUnwindTableForProcessMapping(pid int, executableMappings *unwind.ExecutableMapping, procInfoBuf *bytes.Buffer) error {
-	var minCoveredPc uint64
-	var maxCoveredPc uint64
-	var compactUnwindTable unwind.CompactUnwindTable
-
-	if !executableMappings.IsJitted() && !executableMappings.IsSpecial() {
-		fullExecutablePath := path.Join(fmt.Sprintf("/proc/%d/root", pid), executableMappings.Executable)
-		// @nocommit: here we could detect if we already know the buildID and just pass the metadata
-
-		// 1. Get FDEs
-		fdes, err := unwind.ReadFDEs(fullExecutablePath) // @nocommit: this should accept an ELF file perhaps.
-		if err != nil {
-			return err
-		}
-
-		if len(fdes) == 0 {
-			return fmt.Errorf("fde was zero")
-		}
-
-		sort.Sort(fdes) // hope this help with efficiency, too
-		minCoveredPc = fdes[0].Begin()
-		maxCoveredPc = fdes[len(fdes)-1].End()
-
-		// 2. Build unwind table
-		unwindTable := unwind.BuildUnwindTable(fdes) // @nocommit: intermediate step
-		sort.Sort(unwindTable)                       // 2.5 Sort @nocommit: perhaps sorting the BPF friendly one will be faster
-		// 3. Get the compact, BPF-friendly representation
-		compactUnwindTable = unwind.CompactUnwindTableRepresentation(unwindTable)
-		// now we have a full compact unwind table that we have to split in different BPF maps.
-		fmt.Println("=> found", len(compactUnwindTable), "unwind entries for", executableMappings.Executable, "low pc", fmt.Sprintf("%x", minCoveredPc), "high pc", fmt.Sprintf("%x", maxCoveredPc)) // @nocommit: remove
-	}
 
 	// @nocommit: recover from panic
 	// Set unwind table.
@@ -593,7 +561,7 @@ func (p *CPU) addUnwindTableForProcessMapping(pid int, executableMappings *unwin
 	        github.com/parca-dev/parca-agent/pkg/profiler/cpu/cpu.go:320 +0x116a
 	[javierhonduco@fedora parca-agent]$
 	*/
-	if err := p.bpfMaps.setUnwindTable(pid, compactUnwindTable, executableMappings, procInfoBuf, minCoveredPc, maxCoveredPc); err != nil {
+	if err := p.bpfMaps.setUnwindTable(pid, executableMappings, procInfoBuf); err != nil {
 		panic(fmt.Errorf("setUnwindTable: %w", err))
 	}
 

@@ -16,6 +16,7 @@ package unwind
 
 import (
 	"debug/elf"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -43,6 +44,11 @@ const (
 	RbpRuleOffset
 	RbpRuleRegister
 	RbpRegisterExpression
+)
+
+var (
+	ErrNoFDEsFound            = errors.New("no FDEs found")
+	ErrEhFrameSectionNotFound = errors.New("failed to find .eh_frame section")
 )
 
 // UnwindTableBuilder helps to build UnwindTable for a given PID.
@@ -210,7 +216,7 @@ func ReadFDEs(path string) (frame.FrameDescriptionEntries, error) {
 
 	sec := obj.Section(".eh_frame")
 	if sec == nil {
-		return nil, fmt.Errorf("failed to find .eh_frame section")
+		return nil, ErrEhFrameSectionNotFound
 	}
 
 	// TODO(kakkoyun): Consider using the debug_frame section as a fallback.
@@ -224,6 +230,10 @@ func ReadFDEs(path string) (frame.FrameDescriptionEntries, error) {
 	fdes, err := frame.Parse(ehFrame, obj.ByteOrder, 0, pointerSize(obj.Machine), sec.Addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse frame data: %w", err)
+	}
+
+	if len(fdes) == 0 {
+		return nil, ErrNoFDEsFound
 	}
 
 	return fdes, nil
@@ -252,6 +262,10 @@ type CompactUnwindTableRow struct {
 
 func (cutr *CompactUnwindTableRow) Pc() uint64 {
 	return cutr.pc
+}
+
+func (cutr *CompactUnwindTableRow) ReservedDoNotUse() uint16 {
+	return cutr.__reserved_do_not_use
 }
 
 func (cutr *CompactUnwindTableRow) CfaType() uint8 {

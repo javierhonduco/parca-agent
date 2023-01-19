@@ -47,6 +47,10 @@ func (pm *ExecutableMapping) IsJitted() bool {
 	return pm.Executable == ""
 }
 
+func (pm *ExecutableMapping) IsNotFileBacked() bool {
+	return pm.IsJitted() || pm.IsSpecial()
+}
+
 // IsSpecial returns whether the file mapping is a "special" region,
 // such as the mappings for vDSOs `[vdso]` and others.
 func (pm *ExecutableMapping) IsSpecial() bool {

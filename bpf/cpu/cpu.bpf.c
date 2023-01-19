@@ -594,6 +594,8 @@ static __always_inline void add_stacks(struct bpf_perf_event_data *ctx,
     if (stack_id >= 0) {
       stack_key.user_stack_id = stack_id;
       stack_key.user_stack_id_dwarf = 0;
+    } else {
+      // bpf_printk("fp failed\n");
     }
   }
 
