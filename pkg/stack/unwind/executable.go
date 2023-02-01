@@ -16,12 +16,72 @@ package unwind
 
 import (
 	"debug/elf"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
+	"syscall"
 
+	burrow "github.com/goburrow/cache"
 	"github.com/hashicorp/go-version"
 	"github.com/xyproto/ainur"
 )
+
+type FramePointerCache struct {
+	cache burrow.Cache
+}
+
+// the inode value can be recycled (this is implementation specific)
+// and it's only unique across filesystems. By adding the creation time
+// to the cache key we significantly reduce the chances of producing wrong
+// results.
+type framePointerCacheKey struct {
+	inode        uint64
+	creationTime syscall.Timespec
+}
+
+func (fpc *FramePointerCache) cacheKey(executable string) (framePointerCacheKey, error) {
+	fileinfo, err := os.Stat(executable)
+	if err != nil {
+		return framePointerCacheKey{}, err
+	}
+
+	stat, ok := fileinfo.Sys().(*syscall.Stat_t)
+	if !ok {
+		return framePointerCacheKey{}, errors.New("fileinfo didn't have stat_t")
+	}
+
+	return framePointerCacheKey{
+		inode:        stat.Ino,
+		creationTime: stat.Ctim,
+	}, nil
+}
+
+func (fpc *FramePointerCache) HasFramePointers(executable string) (bool, error) {
+	cacheKey, err := fpc.cacheKey(executable)
+	if err != nil {
+		return false, err
+	}
+
+	val, found := fpc.cache.GetIfPresent(cacheKey)
+	if found {
+		return val.(bool), nil
+	}
+
+	val, err = HasFramePointers(executable)
+	if err != nil {
+		return false, err
+	}
+
+	fpc.cache.Put(cacheKey, val)
+	return false, nil
+}
+
+func NewHasFramePointersCache() FramePointerCache {
+	return FramePointerCache{
+		cache: burrow.New(burrow.WithMaximumSize(10_000)), // 3 * 64bit * 10k (excluding metadata)
+	}
+}
 
 func HasFramePointers(executable string) (bool, error) {
 	elf, err := elf.Open(executable)
