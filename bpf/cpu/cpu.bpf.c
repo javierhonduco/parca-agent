@@ -69,6 +69,7 @@ _Static_assert(1 << MAX_BINARY_SEARCH_DEPTH >= MAX_UNWIND_TABLE_SIZE, "Unwind ta
 #define BINARY_SEARCH_NOT_FOUND 0xFABADA
 #define BINARY_SEARCH_SHOULD_NEVER_HAPPEN 0xDEADBEEF
 #define BINARY_SEARCH_EXHAUSTED_ITERATIONS 0xBADFAD
+#define BINARY_SEARCH_PC_NOT_CONTAINED 0x100000
 
 // Stack walking methods.
 enum stack_walking_method {
@@ -332,13 +333,32 @@ static __always_inline void *bpf_map_lookup_or_try_init(void *map, const void *k
 // information for a given program counter (pc).
 static u64 find_offset_for_pc(stack_unwind_table_t *table, u64 pc, u64 left, u64 right) {
   u64 found = BINARY_SEARCH_NOT_FOUND;
+/*
+		cfaOffset: 100,
+			rbpOffset: 200, */
 
   for (int i = 0; i < MAX_BINARY_SEARCH_DEPTH; i++) {
     // TODO(javierhonduco): ensure that this condition is right as we use
     // unsigned values...
     if (left >= right) {
       bpf_printk("\t.done");
-      return found;
+      // Appease the verifier.
+      if (found < MAX_UNWIND_TABLE_SIZE) {
+        if(table->rows[found].cfa_offset == 100 && table->rows[found].rbp_offset == 200) {
+          return BINARY_SEARCH_PC_NOT_CONTAINED;
+        }
+      }
+
+      u64 one_more_to_the_right = found + 1;
+      // Appease the verifier.
+      if (one_more_to_the_right < MAX_UNWIND_TABLE_SIZE) {
+        if (pc <= table->rows[one_more_to_the_right].pc) {
+          bpf_printk("====> contained");
+          return found;
+        }
+      }
+      bpf_printk("====> not contained");
+      return BINARY_SEARCH_PC_NOT_CONTAINED;
     }
 
     u32 mid = (left + right) / 2;
@@ -351,9 +371,7 @@ static u64 find_offset_for_pc(stack_unwind_table_t *table, u64 pc, u64 left, u64
     }
 
     // Debug logs.
-    // bpf_printk("\t-> fetched PC %llx, target PC %llx (iteration %d/%d, mid:
-    // %d, left:%d, right:%d)", ctx->table->rows[mid].pc, ctx->pc, index,
-    // MAX_BINARY_SEARCH_DEPTH, mid, ctx->left, ctx->right);
+    // bpf_printk("\t-> fetched PC %llx, target PC %llx (iteration %d/%d, mid: %d, left:%d, right:%d)", table->rows[mid].pc, pc, i, MAX_BINARY_SEARCH_DEPTH, mid, left, right);
     if (table->rows[mid].pc <= pc) {
       found = mid;
       left = mid + 1;
@@ -592,6 +610,12 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
     if (table_idx == BINARY_SEARCH_NOT_FOUND || table_idx == BINARY_SEARCH_SHOULD_NEVER_HAPPEN || table_idx == BINARY_SEARCH_EXHAUSTED_ITERATIONS) {
       bpf_printk("[error] binary search failed with %llx", table_idx);
       return 1;
+    }
+
+    if (table_idx == BINARY_SEARCH_PC_NOT_CONTAINED) {
+      bpf_printk("kemal detected an error");
+      reached_bottom_of_stack = true;
+      break;
     }
 
     bpf_printk("\t=> table_index: %d", table_idx);
