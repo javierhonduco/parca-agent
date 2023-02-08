@@ -89,16 +89,16 @@ func BuildCompactUnwindTable(fdes frame.FrameDescriptionEntries) (CompactUnwindT
 			row := unwindTableRow(insCtx)
 			compactRow, err := rowToCompactRow(row)
 			if err != nil {
+				panic("errrrr")
 				return CompactUnwindTable{}, err
 			}
 			table = append(table, compactRow)
 		}
 		// Add a synthetic row for the end of the function.
-		lastRow := table[len(table)-1]
 		table = append(table, CompactUnwindTableRow{
 			pc:        fde.End(),
-			cfaType:   lastRow.cfaType,
-			rbpType:   lastRow.rbpType,
+			cfaType:   11,
+			rbpType:   22,
 			cfaOffset: 100,
 			rbpOffset: 200,
 		})

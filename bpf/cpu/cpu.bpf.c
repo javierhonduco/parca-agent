@@ -41,7 +41,7 @@ _Static_assert(MAX_TAIL_CALLS *MAX_STACK_DEPTH_PER_PROGRAM >= MAX_STACK_DEPTH, "
 _Static_assert(1 << MAX_BINARY_SEARCH_DEPTH >= MAX_UNWIND_TABLE_SIZE, "Unwind table too small");
 
 // Useful to isolate stack unwinding issues.
-#define DISABLE_BPF_HELPER_FP_UNWINDER 0
+#define DISABLE_BPF_HELPER_FP_UNWINDER 1
 
 // Unwind tables bigger than can't fit in the remaining space
 // of the current shard are broken up into chunks up to `MAX_UNWIND_TABLE_SIZE`.
@@ -484,9 +484,11 @@ static __always_inline enum find_unwind_table_return find_unwind_table(shard_inf
 
   for (int i = 0; i < MAX_UNWIND_TABLE_CHUNKS; i++) {
     if (i > shards->len) {
+      bpf_printk("[info] exhausted search");
       return FIND_UNWIND_SHARD_EXHAUSTED_SEARCH;
     }
 
+    bpf_printk("[info] exec id %d, %d/%d low_pc %llx pc %llx high_pc %llx", executable_id, i, shards->len, shards->shards[i].low_pc, pc, shards->shards[i].high_pc);
     if (shards->shards[i].low_pc <= pc - load_address && pc - load_address <= shards->shards[i].high_pc) {
       bpf_printk("[info] found shard");
       *shard_info = &shards->shards[i];
@@ -535,7 +537,7 @@ static __always_inline void add_stack(struct bpf_perf_event_data *ctx, u64 pid_t
     }
 
   } else if (method == STACK_WALKING_METHOD_FP) {
-    bpf_printk("[info] fp unwinding %d", DISABLE_BPF_HELPER_FP_UNWINDER);
+    // bpf_printk("[info] fp unwinding %d", DISABLE_BPF_HELPER_FP_UNWINDER);
     if (DISABLE_BPF_HELPER_FP_UNWINDER) {
       return;
     }
@@ -613,7 +615,7 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
     }
 
     if (table_idx == BINARY_SEARCH_PC_NOT_CONTAINED) {
-      bpf_printk("kemal detected an error");
+      // bpf_printk("kemal detected an error");
       reached_bottom_of_stack = true;
       break;
     }
