@@ -345,6 +345,7 @@ static u64 find_offset_for_pc(stack_unwind_table_t *table, u64 pc, u64 left, u64
       // Appease the verifier.
       if (found < MAX_UNWIND_TABLE_SIZE) {
         if(table->rows[found].cfa_offset == 100 && table->rows[found].rbp_offset == 200) {
+          bpf_printk("====> not contained 1 %llx", pc);
           return BINARY_SEARCH_PC_NOT_CONTAINED;
         }
       }
@@ -357,7 +358,7 @@ static u64 find_offset_for_pc(stack_unwind_table_t *table, u64 pc, u64 left, u64
           return found;
         }
       }
-      bpf_printk("====> not contained");
+      bpf_printk("====> not contained 2 %llx", pc);
       return BINARY_SEARCH_PC_NOT_CONTAINED;
     }
 
@@ -660,7 +661,7 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
       previous_rsp = unwind_state->sp + found_cfa_offset;
     } else if (found_cfa_type == CFA_TYPE_EXPRESSION) {
       if (found_cfa_offset == DWARF_EXPRESSION_UNKNOWN) {
-        bpf_printk("[error] CFA is an unsupported expression, bailing out");
+        bpf_printk("[warn] CFA is an unsupported expression, bailing out");
         BUMP_UNWIND_UNSUPPORTED_EXPRESSION();
         return 1;
       }
@@ -681,7 +682,7 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
 
       previous_rsp = unwind_state->sp + 8 + ((((unwind_state->ip & 15) >= threshold)) << 3);
     } else {
-      bpf_printk("\t[error] register %d not valid (expected $rbp or $rsp)", found_cfa_type);
+      bpf_printk("\t[warn] register %d not valid (expected $rbp or $rsp)", found_cfa_type);
       BUMP_UNWIND_CATCHALL_ERROR();
       return 1;
     }

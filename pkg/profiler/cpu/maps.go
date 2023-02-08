@@ -757,16 +757,22 @@ func (m *bpfMaps) setUnwindTableForMapping(buf *profiler.EfficientBuffer, pid in
 	aslrElegible := executable.IsASLRElegibleElf(elfFile)
 
 	adjustedLoadAddress := uint64(0)
+
 	if mapping.IsMainObject() {
 		level.Debug(m.logger).Log("msg", "dealing with main object", "mapping", mapping)
 
 		if aslrElegible {
+			fmt.Println("aslr?!")
 			adjustedLoadAddress = mapping.LoadAddr
 		}
 	} else {
 		adjustedLoadAddress = mapping.LoadAddr
 	}
 
+	/* if pid == 1556822 {
+		panic(adjustedLoadAddress)
+	}
+	*/
 	level.Debug(m.logger).Log("msg", "adding memory mappings in for executable", "executableID", m.executableID, "buildID", buildID, "executable", mapping.Executable)
 
 	// Add the memory mapping information.
