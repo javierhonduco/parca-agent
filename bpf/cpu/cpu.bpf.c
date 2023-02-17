@@ -24,7 +24,7 @@
 // Number of BPF tail calls that will be attempted.
 #define MAX_TAIL_CALLS 30
 // Number of frames to walk in total.
-#define MAX_STACK_DEPTH 60
+#define MAX_STACK_DEPTH 115
 // Number of stacks.
 #define MAX_STACK_TRACES 1024
 // Number of items in the stack counts aggregation map.
@@ -299,32 +299,36 @@ static __always_inline stack_unwind_table_t *find_unwind_table(pid_t pid,
 }
 
 /////////////////////////
+typedef unsigned int uint32_t;
 
-static __always_inline u64 stack_hash_murmur2(stack_trace_t *stack) {
-  const u64 m = 0xc6a4a7935bd1e995LLU;
-  const int r = 47;
-  u64 len = stack->len;
-  u64 seed = 0xFAFAFAFAFA;
+static __always_inline uint32_t MurmurHash2(const void *key, int len) {
+  /* 'm' and 'r' are mixing constants generated offline.
+     They're not really 'magic', they just happen to work well.  */
 
-  u64 h = seed ^ (len * m);
-  u64 k = 0;
+  const uint32_t m = 0x5bd1e995;
+  const int r = 24;
 
-#pragma clang loop unroll(full)
-  for (int i = 0; i < MAX_STACK_DEPTH; i++) { // not enough frames, we need 127
-    k = stack->addresses[i];
+  /* Initialize the hash to a 'random' value */
 
+  uint32_t h = 0x0 ^ len;
+
+  /* Mix 4 bytes at a time into the hash */
+
+  // MAX_STACK_DEPTH * 2 = 256 (because we hash 32 bits at a time).
+  //#pragma clang loop interleave(enable)
+    uint32_t * data = (uint32_t *)key;
+    #pragma clang loop unroll(full)
+  for (int i = 0; i < 2*MAX_STACK_DEPTH; i++) {
+    uint32_t k = *(uint32_t *)data;
     k *= m;
     k ^= k >> r;
     k *= m;
 
-  // error: cpu/cpu.bpf.c:319:7: in function walk_user_stacktrace_impl i32 (%struct.bpf_perf_event_data*): Looks like the BPF stack limit of 512 bytes is exceeded.
-    h ^= k;
     h *= m;
+    h ^= k;
   }
-
   return h;
 }
-
 ///////////////////////////
 
 static __always_inline void add_stacks(struct bpf_perf_event_data *ctx,
@@ -353,7 +357,7 @@ static __always_inline void add_stacks(struct bpf_perf_event_data *ctx,
   }
 
   if (method == STACK_WALKING_METHOD_DWARF) {
-    int stack_hash = (int)stack_hash_murmur2(&unwind_state->stack);
+    int stack_hash = (int)MurmurHash2(&unwind_state->stack.addresses, unwind_state->stack.len);
 
     stack_key.user_stack_id_dwarf = stack_hash;
     stack_key.user_stack_id = 0;
