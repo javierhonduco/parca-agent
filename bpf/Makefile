@@ -68,17 +68,8 @@ $(OUT_BPF): $(BPF_SRC) $(LIBBPF_HEADERS) $(LIBBPF_OBJ) $(BPF_HEADERS) | $(OUT_DI
 		-D__TARGET_ARCH_$(LINUX_ARCH) \
 		-I $(LIBBPF_HEADERS) \
 		-I $(BPF_HEADERS) \
-		-Wno-address-of-packed-member \
-		-Wno-compare-distinct-pointer-types \
-		-Wno-deprecated-declarations \
-		-Wno-gnu-variable-sized-type-not-at-end \
-		-Wno-pointer-sign \
-		-Wno-pragma-once-outside-header \
-		-Wno-unknown-warning-option \
-		-Wno-unused-value \
-		-Wdate-time \
-		-Wunused \
 		-Wall \
+		-Wextra \
 		-fno-stack-protector \
 		-fno-jump-tables \
 		-fno-unwind-tables \
@@ -86,9 +77,8 @@ $(OUT_BPF): $(BPF_SRC) $(LIBBPF_HEADERS) $(LIBBPF_OBJ) $(BPF_HEADERS) | $(OUT_DI
 		-xc \
 		-nostdinc \
 		-target bpf \
-		-O2 -emit-llvm -c -g $< -o $(@:.o=.ll)
+		-O3 -emit-llvm -c -g $< -o $(@:.o=.ll)
 	$(CMD_LLC) -march=bpf -filetype=obj -o $@ $(@:.o=.ll)
-	rm $(@:.o=.ll)
 
 $(VMLINUX):
 	bpftool btf dump file /sys/kernel/btf/vmlinux format c > $@
