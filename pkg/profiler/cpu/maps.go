@@ -43,19 +43,20 @@ import (
 )
 
 const (
-	debugPIDsMapName        = "debug_pids"
-	stackCountsMapName      = "stack_counts"
-	stackTracesMapName      = "stack_traces"
-	unwindShardsMapName     = "unwind_shards"
+	debugPIDsMapName   = "debug_pids"
+	stackCountsMapName = "stack_counts"
+	stackTracesMapName = "stack_traces"
+
+	unwindInfoChunksMapName = "unwind_info_chunks"
 	dwarfStackTracesMapName = "dwarf_stack_traces"
 	unwindTablesMapName     = "unwind_tables"
 	processInfoMapName      = "process_info"
 	programsMapName         = "programs"
 
 	// With the current compact rows, the max items we can store in the kernels
-	// we have tested is 262k per map, which we rounded it down to 250k.
-	maxUnwindShards       = 50         // How many unwind table shards we have.
-	maxUnwindTableSize    = 250 * 1000 // Always needs to be sync with MAX_UNWIND_TABLE_SIZE in the BPF program.
+	// we have tested is ~400k rows per map entry.
+	maxUnwindShards       = 40         // How many unwind table shards we have.
+	maxUnwindTableSize    = 400 * 1000 // Always needs to be sync with MAX_UNWIND_TABLE_SIZE in the BPF program.
 	maxMappingsPerProcess = 120        // Always need to be in sync with MAX_MAPPINGS_PER_PROCESS.
 	maxUnwindTableChunks  = 30         // Always need to be in sync with MAX_UNWIND_TABLE_CHUNKS.
 
@@ -248,7 +249,7 @@ func (m *bpfMaps) create() error {
 		return fmt.Errorf("get stack traces map: %w", err)
 	}
 
-	unwindShards, err := m.module.GetMap(unwindShardsMapName)
+	unwindShards, err := m.module.GetMap(unwindInfoChunksMapName)
 	if err != nil {
 		return fmt.Errorf("get unwind shards map: %w", err)
 	}
@@ -569,7 +570,6 @@ func (m *bpfMaps) writeUnwindTableRow(rowSlice *profiler.EfficientBuffer, row un
 //
 // Note: we write field by field to avoid the expensive reflection code paths
 // when writing structs using `binary.Write`.
-// @nocommit update.
 func (m *bpfMaps) writeMapping(buf *profiler.EfficientBuffer, loadAddress, startAddr, endAddr, executableID, type_ uint64) {
 	// .load_address
 	buf.PutUint64(loadAddress)

@@ -126,27 +126,28 @@ typedef u64 stack_trace_type[MAX_STACK_DEPTH];
 
 /*============================= INTERNAL STRUCTS ============================*/
 
-// Unwind table shard.
-typedef struct shard_info {
+// Unwind tables are splitted in chunks and each chunk
+// maps to a range of rows within a shard.
+typedef struct {
   u64 low_pc;
   u64 high_pc;
   u64 shard_index;
   u64 low_index;
   u64 high_index;
-} shard_info_t;
+} chunk_info_t;
 
 // Unwind table shards for an executable mapping.
-typedef struct stack_unwind_table_shards {
-  shard_info_t shards[MAX_UNWIND_TABLE_CHUNKS];
-} stack_unwind_table_shards_t;
+typedef struct {
+  chunk_info_t chunks[MAX_UNWIND_TABLE_CHUNKS];
+} unwind_info_chunks_t;
 
 // The addresses of a native stack trace.
-typedef struct stack_trace_t {
+typedef struct {
   u64 len;
   u64 addresses[MAX_STACK_DEPTH];
 } stack_trace_t;
 
-typedef struct stack_count_key {
+typedef struct {
   int pid;
   int tgid;
   int user_stack_id;
@@ -155,7 +156,7 @@ typedef struct stack_count_key {
 } stack_count_key_t;
 
 // Represents an executable mapping.
-typedef struct mapping {
+typedef struct {
   u64 load_address;
   u64 begin;
   u64 end;
@@ -181,7 +182,7 @@ typedef struct {
 } unwind_state_t;
 
 // A row in the stack unwinding table.
-typedef struct stack_unwind_row {
+typedef struct {
   u64 pc;
   u16 __reserved_do_not_use;
   u8 cfa_type;
@@ -191,7 +192,7 @@ typedef struct stack_unwind_row {
 } stack_unwind_row_t;
 
 // Unwinding table representation.
-typedef struct stack_unwind_table {
+typedef struct {
   stack_unwind_row_t rows[MAX_UNWIND_TABLE_SIZE];
 } stack_unwind_table_t;
 
@@ -222,9 +223,8 @@ BPF_STACK_TRACE(stack_traces, MAX_STACK_TRACES_ENTRIES);
 BPF_HASH(dwarf_stack_traces, int, stack_trace_t, MAX_STACK_TRACES_ENTRIES);
 BPF_HASH(stack_counts, stack_count_key_t, u64, MAX_STACK_COUNTS_ENTRIES);
 
-// executable_chunks?
-BPF_HASH(unwind_shards, u64, stack_unwind_table_shards_t,
-         5 * 1000); // <executable_id, shardmap>
+BPF_HASH(unwind_info_chunks, u64, unwind_info_chunks_t,
+         5 * 1000); // Mapping of executable ID to unwind info chunks.
 BPF_HASH(unwind_tables, u64, stack_unwind_table_t,
          5); // Table size will be updated in userspace.
 
@@ -414,9 +414,7 @@ enum find_unwind_table_return {
   FIND_UNWIND_MAPPING_SHOULD_NEVER_HAPPEN = 2,
   FIND_UNWIND_MAPPING_EXHAUSTED_SEARCH = 3,
   FIND_UNWIND_MAPPING_NOT_FOUND = 4,
-  FIND_UNWIND_SHARD_UNSET = 5,
-  FIND_UNWIND_SHARD_EXHAUSTED_SEARCH = 6,
-  FIND_UNWIND_SHARD_NOT_FOUND = 7,
+  FIND_UNWIND_CHUNK_NOT_FOUND = ,
 
   FIND_UNWIND_JITTED = 100,
   FIND_UNWIND_SPECIAL = 200,
@@ -425,7 +423,7 @@ enum find_unwind_table_return {
 // Finds the shard information for a given pid and program counter. Optionally,
 // and offset can be passed that will be filled in with the mapping's load
 // address.
-static __always_inline enum find_unwind_table_return find_unwind_table(shard_info_t **shard_info, pid_t pid, u64 pc, u64 *offset) {
+static __always_inline enum find_unwind_table_return find_unwind_table(chunk_info_t **chunk_info, pid_t pid, u64 pc, u64 *offset) {
   process_info_t *proc_info = bpf_map_lookup_elem(&process_info, &pid);
   // Appease the verifier.
   if (proc_info == NULL) {
@@ -478,28 +476,29 @@ static __always_inline enum find_unwind_table_return find_unwind_table(shard_inf
   LOG("~about to check shards found=%d", found);
   LOG("~checking shards now");
 
-  // Find the shard where this unwind table lives.
-  stack_unwind_table_shards_t *shards = bpf_map_lookup_elem(&unwind_shards, &executable_id);
-  if (shards == NULL) {
-    LOG("[info] shards is null for executable %llu", executable_id);
-    return FIND_UNWIND_SHARD_NOT_FOUND;
+  // Find the chunk where this unwind table lives.
+  // Each chunk maps to exactly one shard.
+  unwind_info_chunks_t *chunks = bpf_map_lookup_elem(&unwind_info_chunks, &executable_id);
+  if (chunks == NULL) {
+    LOG("[info] chunks is null for executable %llu", executable_id);
+    return FIND_UNWIND_CHUNK_NOT_FOUND;
   }
 
   u64 adjusted_pc = pc - load_address;
   for (int i = 0; i < MAX_UNWIND_TABLE_CHUNKS; i++) {
     // Reached last chunk.
-    if (shards->shards[i].low_pc == 0) {
+    if (chunks->chunks[i].low_pc == 0) {
       break;
     }
-    if (shards->shards[i].low_pc <= adjusted_pc && adjusted_pc <= shards->shards[i].high_pc) {
-      LOG("[info] found shard");
-      *shard_info = &shards->shards[i];
+    if (chunks->chunks[i].low_pc <= adjusted_pc && adjusted_pc <= chunks->chunks[i].high_pc) {
+      LOG("[info] found chunk");
+      *chunk_info = &chunks->chunks[i];
       return FIND_UNWIND_SUCCESS;
     }
   }
 
-  LOG("[error] could not find shard");
-  return FIND_UNWIND_SHARD_NOT_FOUND;
+  LOG("[error] could not find chunk");
+  return FIND_UNWIND_CHUNK_NOT_FOUND;
 }
 
 // Kernel addresses have the top bits set.
@@ -685,8 +684,8 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
     LOG("\tcurrent bp: %llx", unwind_state->bp);
 
     u64 offset = 0;
-    shard_info_t *shard = NULL;
-    enum find_unwind_table_return unwind_table_result = find_unwind_table(&shard, user_pid, unwind_state->ip, &offset);
+    chunk_info_t *chunk_info = NULL;
+    enum find_unwind_table_return unwind_table_result = find_unwind_table(&chunk_info, user_pid, unwind_state->ip, &offset);
 
     if (unwind_table_result == FIND_UNWIND_JITTED) {
       LOG("JIT section, stopping");
@@ -694,21 +693,21 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
     } else if (unwind_table_result == FIND_UNWIND_SPECIAL) {
       LOG("special section, stopping");
       return 1;
-    } else if (shard == NULL) {
+    } else if (chunk_info == NULL) {
       // improve
       reached_bottom_of_stack = true;
       break;
     }
 
-    stack_unwind_table_t *unwind_table = bpf_map_lookup_elem(&unwind_tables, &shard->shard_index);
+    stack_unwind_table_t *unwind_table = bpf_map_lookup_elem(&unwind_tables, &chunk_info->shard_index);
     if (unwind_table == NULL) {
-      LOG("unwind table is null :( for shard %llu", shard->shard_index);
+      LOG("unwind table is null :( for shard %llu", chunk_info->shard_index);
       return 0;
     }
 
     LOG("le offset: %llx", offset);
-    u64 left = shard->low_index;
-    u64 right = shard->high_index;
+    u64 left = chunk_info->low_index;
+    u64 right = chunk_info->high_index;
     LOG("========== left %llu right %llu", left, right);
 
     u64 table_idx = find_offset_for_pc(unwind_table, unwind_state->ip - offset, left, right);
@@ -991,7 +990,7 @@ int profile_cpu(struct bpf_perf_event_data *ctx) {
   }
 
   if (has_unwind_information(user_pid)) {
-    shard_info_t *shard = NULL;
+    chunk_info_t *shard = NULL;
     find_unwind_table(&shard, user_pid, unwind_state->ip, NULL);
     if (shard == NULL) {
       LOG("[warn] IP not covered. JIT / bug? IP %llx)", unwind_state->ip);
