@@ -96,14 +96,14 @@ const (
 	unwindShardsSizeBytes = maxUnwindTableChunks * 8 * 5
 	/*
 		typedef struct __attribute__((packed)) {
-		  u64 pc;
+		  u32 pc;
 		  u8 cfa_type;
 		  u8 rbp_type;
 		  s16 cfa_offset;
 		  s16 rbp_offset;
 		} stack_unwind_row_t;
 	*/
-	compactUnwindRowSizeBytes          = 14
+	compactUnwindRowSizeBytes          = 10
 	minRoundsBeforeRedoingUnwindTables = 5
 	maxCachedProcesses                 = 10_0000
 )
@@ -111,6 +111,10 @@ const (
 const (
 	mappingTypeJitted  = 1
 	mappingTypeSpecial = 2
+)
+
+const (
+	maxUint32Value = 4294967295
 )
 
 var (
@@ -560,9 +564,9 @@ func (m *bpfMaps) generateCompactUnwindTable(fullExecutablePath string, mapping 
 // Note: we are avoiding `binary.Write` and prefer to use the lower level APIs
 // to avoid allocations and CPU spent in the reflection code paths as well as
 // in the allocations for the intermediate buffers.
-func (m *bpfMaps) writeUnwindTableRow(rowSlice *profiler.EfficientBuffer, row unwind.CompactUnwindTableRow) {
+func (m *bpfMaps) writeUnwindTableRow(rowSlice *profiler.EfficientBuffer, row unwind.CompactUnwindTableRow, pcRelativeToChunk uint32) {
 	// .pc
-	rowSlice.PutUint64(row.Pc())
+	rowSlice.PutUint32(pcRelativeToChunk)
 	// .cfa_type
 	rowSlice.PutUint8(row.CfaType())
 	// .rbp_type
@@ -928,20 +932,16 @@ func (m *bpfMaps) setUnwindTableForMapping(buf *profiler.EfficientBuffer, pid in
 
 			level.Debug(m.logger).Log("executableID", m.executableID, "executable", mapping.Executable, "current shard", chunkIndex)
 
-			// Dealing with the first chunk, we must add the lowest known PC.
-			minPc := currentChunk[0].Pc()
-			if minPc == 0 {
-				panic("maxPC can't be zwero")
-			}
+			lowChunkPc := currentChunk[0].Pc()
+			highChunkPc := currentChunk[len(currentChunk)-1].Pc()
+
 			// .low_pc
-			if err := binary.Write(unwindShardsValBuf, m.byteOrder, minPc); err != nil {
+			if err := binary.Write(unwindShardsValBuf, m.byteOrder, lowChunkPc); err != nil {
 				return fmt.Errorf("write shards .low_pc bytes: %w", err)
 			}
 
-			// Dealing with the last chunk, we must add the highest known PC.
-			maxPc := currentChunk[len(currentChunk)-1].Pc()
 			// .high_pc
-			if err := binary.Write(unwindShardsValBuf, m.byteOrder, maxPc); err != nil {
+			if err := binary.Write(unwindShardsValBuf, m.byteOrder, highChunkPc); err != nil {
 				return fmt.Errorf("write shards .high_pc bytes: %w", err)
 			}
 
@@ -965,7 +965,11 @@ func (m *bpfMaps) setUnwindTableForMapping(buf *profiler.EfficientBuffer, pid in
 			for _, row := range currentChunk {
 				// Get a slice of the bytes we need for this row.
 				rowSlice := m.unwindInfoMemory.Slice(compactUnwindRowSizeBytes)
-				m.writeUnwindTableRow(&rowSlice, row)
+				pcRelativeToChunk := row.Pc() - lowChunkPc
+				if pcRelativeToChunk > maxUint32Value {
+					level.Error(m.logger).Log("msg", "relative PC does not fit in 32 bits", "pc", row.Pc(), "lowChunkPc", lowChunkPc)
+				}
+				m.writeUnwindTableRow(&rowSlice, row, uint32(pcRelativeToChunk))
 			}
 
 			// We ran out of space in the current shard. Let's allocate a new one.

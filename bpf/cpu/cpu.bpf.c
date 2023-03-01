@@ -183,13 +183,13 @@ typedef struct {
 
 // A row in the stack unwinding table for x86_64.
 typedef struct __attribute__((packed)) {
-  u64 pc;
+  u32 pc;
   u8 cfa_type;
   u8 rbp_type;
   s16 cfa_offset;
   s16 rbp_offset;
 } stack_unwind_row_t;
-_Static_assert(sizeof(stack_unwind_row_t) == 14, "unwind row has the expected size");
+_Static_assert(sizeof(stack_unwind_row_t) == 10, "unwind row has the expected size");
 
 // Unwinding table representation.
 typedef struct {
@@ -361,7 +361,7 @@ static __always_inline void *bpf_map_lookup_or_try_init(void *map, const void *k
 
 // Binary search the unwind table to find the row index containing the unwind
 // information for a given program counter (pc).
-static u64 find_offset_for_pc(stack_unwind_table_t *table, u64 pc, u64 left, u64 right) {
+static u64 find_offset_for_pc(stack_unwind_table_t *table, u32 pc, u64 left, u64 right) {
   u64 found = BINARY_SEARCH_DEFAULT;
 
   for (int i = 0; i < MAX_BINARY_SEARCH_DEPTH; i++) {
@@ -719,7 +719,12 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
     u64 right = chunk_info->high_index;
     LOG("========== left %llu right %llu", left, right);
 
-    u64 table_idx = find_offset_for_pc(unwind_table, unwind_state->ip - offset, left, right);
+    // To find a given PC, we need to make it relative to the loaded address
+    // of the current loaded executable. We also need to make it relative to
+    // the low PC of the unwind shard. This was an optimisation to use 4 bytes
+    // instead of 8 for program counters.
+    u32 relative_pc = unwind_state->ip - offset - chunk_info->low_pc;
+    u64 table_idx = find_offset_for_pc(unwind_table, relative_pc, left, right);
 
     if (table_idx == BINARY_SEARCH_DEFAULT || table_idx == BINARY_SEARCH_SHOULD_NEVER_HAPPEN || table_idx == BINARY_SEARCH_EXHAUSTED_ITERATIONS) {
       LOG("[error] binary search failed with %llx", table_idx);
@@ -736,12 +741,12 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
       return 1;
     }
 
-    u64 found_pc = unwind_table->rows[table_idx].pc;
+    u32 found_pc = unwind_table->rows[table_idx].pc;
     u8 found_cfa_type = unwind_table->rows[table_idx].cfa_type;
     u8 found_rbp_type = unwind_table->rows[table_idx].rbp_type;
     s16 found_cfa_offset = unwind_table->rows[table_idx].cfa_offset;
     s16 found_rbp_offset = unwind_table->rows[table_idx].rbp_offset;
-    LOG("\tcfa type: %d, offset: %d (row pc: %llx)", found_cfa_type, found_cfa_offset, found_pc);
+    LOG("\tcfa type: %d, offset: %d (row pc: %llx)", found_cfa_type, found_cfa_offset, found_pc); // @nocommit: adding chunk_info->low_pc makes the program too large.
 
     if (found_cfa_type == CFA_TYPE_END_OF_FDE_MARKER) {
       LOG("[info] PC %llx not contained in the unwind info, found marker", unwind_state->ip);
