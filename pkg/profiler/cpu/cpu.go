@@ -229,7 +229,7 @@ func loadBpfProgram(logger log.Logger, debugEnabled, verboseBpfLogging bool, mem
 
 	bpf.SetLoggerCbs(bpf.Callbacks{
 		Log: func(_ int, msg string) {
-			level.Debug(logger).Log("msg", msg)
+			fmt.Println(msg)
 		},
 	})
 

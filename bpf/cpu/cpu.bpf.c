@@ -732,9 +732,9 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
     // Appease the verifier.
     // For some reason bailing out here if the condition is not true does
     // not work?
-    if (len >= 0 && len < MAX_STACK_DEPTH) {
+    // if (len >= 0 && len < MAX_STACK_DEPTH) {
       unwind_state->stack.addresses[len] = unwind_state->ip;
-    }
+    // }
 
     if (found_rbp_type == RBP_TYPE_REGISTER || found_rbp_type == RBP_TYPE_EXPRESSION) {
       LOG("\t[error] frame pointer is %d (register or exp), bailing out", found_rbp_type);
