@@ -17,9 +17,9 @@
 /*================================ CONSTANTS =================================*/
 
 // Number of frames to walk per tail call iteration.
-#define MAX_STACK_DEPTH_PER_PROGRAM 15
+#define MAX_STACK_DEPTH_PER_PROGRAM 5
 // Number of BPF tail calls that will be attempted.
-#define MAX_TAIL_CALLS 10
+#define MAX_TAIL_CALLS 30
 // Maximum number of frames.
 #define MAX_STACK_DEPTH 127
 _Static_assert(MAX_TAIL_CALLS *MAX_STACK_DEPTH_PER_PROGRAM >= MAX_STACK_DEPTH, "enough iterations to traverse the whole stack");
@@ -41,7 +41,7 @@ _Static_assert(1 << MAX_BINARY_SEARCH_DEPTH >= MAX_UNWIND_TABLE_SIZE, "unwind ta
 // of the current shard are broken up into chunks up to `MAX_UNWIND_TABLE_SIZE`.
 #define MAX_UNWIND_TABLE_CHUNKS 30
 // Maximum memory mappings per process.
-#define MAX_MAPPINGS_PER_PROCESS 250
+#define MAX_MAPPINGS_PER_PROCESS 500
 
 // Values for dwarf expressions.
 #define DWARF_EXPRESSION_UNKNOWN 0
@@ -416,24 +416,38 @@ static __always_inline enum find_unwind_table_return find_unwind_table(chunk_inf
   u64 type = 0;
 
   // Find the mapping.
-  for (int i = 0; i < MAX_MAPPINGS_PER_PROCESS; i++) {
-    if (i > proc_info->len) {
-      LOG("[info] mapping not found, i (%d) > proc_info->len (%d) pc: %llx", i, proc_info->len, pc);
-      return FIND_UNWIND_MAPPING_EXHAUSTED_SEARCH;
+  u32 left = 0;
+  u32 right = MAX_MAPPINGS_PER_PROCESS;
+  u32 found_idx = 0xBADFAD;
+
+  for (int i = 0; i < 10 /* log2(MAX_MAPPINGS_PER_PROCESS) = 8.9 */; i++) {
+    u32 mid = (left + right) / 2;
+    if (mid < 0 || mid >= MAX_MAPPINGS_PER_PROCESS) {
+      bpf_printk("oh no: should never happen");
+      return -1;
     }
 
-    // Appease the verifier.
-    if (i < 0 || i > MAX_MAPPINGS_PER_PROCESS) {
-      LOG("[error] should never happen, verifier");
-      return FIND_UNWIND_MAPPING_SHOULD_NEVER_HAPPEN;
-    }
-
-    if (proc_info->mappings[i].begin <= pc && pc <= proc_info->mappings[i].end) {
-      found = true;
-      executable_id = proc_info->mappings[i].executable_id;
-      load_address = proc_info->mappings[i].load_address;
-      type = proc_info->mappings[i].type;
+    if (left >= right) {
+      if (found_idx < 0 || found_idx >= MAX_MAPPINGS_PER_PROCESS) {
+        bpf_printk("oh no: should never happen");
+        return -1;
+      }
+      if (proc_info->mappings[found_idx].begin <= pc && pc <= proc_info->mappings[found_idx].end) {
+        found = true;
+        executable_id = proc_info->mappings[found_idx].executable_id;
+        load_address = proc_info->mappings[found_idx].load_address;
+        type = proc_info->mappings[found_idx].type;
+      } else {
+        bpf_printk("oh no: could not find mappings using binary search");
+      }
       break;
+    }
+
+    if (proc_info->mappings[mid].begin <= pc) {
+      left = mid + 1;
+      found_idx = mid;
+    } else {
+      right = mid;
     }
   }
 

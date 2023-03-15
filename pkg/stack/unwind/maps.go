@@ -74,6 +74,10 @@ func (pm *ExecutableMapping) String() string {
 
 type ExecutableMappings []*ExecutableMapping
 
+func (em ExecutableMappings) Len() int           { return len(em) }
+func (em ExecutableMappings) Less(i, j int) bool { return em[i].StartAddr < em[j].StartAddr }
+func (em ExecutableMappings) Swap(i, j int)      { em[i], em[j] = em[j], em[i] }
+
 // HasJitted returns if there's at least one JIT'ed mapping.
 func (pm ExecutableMappings) HasJitted() bool {
 	for _, execMapping := range pm {
