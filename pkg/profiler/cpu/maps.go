@@ -64,7 +64,7 @@ const (
 	/*
 		TODO: once we generate the bindings automatically, remove this.
 
-		typedef struct mapping {
+		typedef struct {
 			u64 load_address;
 			u64 begin;
 			u64 end;
@@ -82,17 +82,17 @@ const (
 	/*
 		TODO: once we generate the bindings automatically, remove this.
 
-		typedef struct shard_info {
+		typedef struct {
 			u64 low_pc;
 			u64 high_pc;
 			u64 shard_index;
 			u64 low_index;
 			u64 high_index;
-		} shard_info_t;
+		} chunk_info_t;
 
-		typedef struct stack_unwind_table_shards {
-			shard_info_t shards[MAX_UNWIND_TABLE_CHUNKS];
-		} stack_unwind_table_shards_t;
+		typedef struct {
+			chunk_info_t shards[MAX_UNWIND_TABLE_CHUNKS];
+		} unwind_info_chunks_t;
 	*/
 	unwindShardsSizeBytes = maxUnwindTableChunks * 8 * 5
 	/*
