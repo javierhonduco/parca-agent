@@ -168,26 +168,15 @@ type hashCacheKey struct {
 	modtime int64
 }
 
-func (di *Manager) ensureUploaded(ctx context.Context, objFile *objectfile.MappedObjectFile) error {
+func (di *Manager) populateDebugFile(ctx context.Context, objFile *objectfile.MappedObjectFile) error {
 	buildID := objFile.BuildID
-	if di.alreadyUploading(buildID) {
-		return nil
-	}
-	di.markAsUploading(buildID)
-
-	// removing the buildID from the cache to ensure a re-upload at the next interation.
-	defer di.removeAsUploading(buildID)
-
-	if shouldInitiateUpload := di.shouldInitiateUpload(ctx, buildID, objFile.File); !shouldInitiateUpload {
-		return nil
-	}
-
+	// we should open this as fast as possible
 	src := di.debuginfoSrcPath(ctx, buildID, objFile)
 	if src == "" {
 		return nil
 	}
 
-	var r io.ReadSeeker
+	var r *os.File
 	size := int64(0)
 	var modtime time.Time
 
@@ -195,6 +184,13 @@ func (di *Manager) ensureUploaded(ctx context.Context, objFile *objectfile.Mappe
 	if err != nil {
 		return err
 	}
+
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("error opening %s: %w", srcFile, err)
+	}
+	defer srcFile.Close()
+
 	// no need to strip the file if ".text" section is missing
 	di.stripDebuginfos = ok
 
@@ -208,7 +204,7 @@ func (di *Manager) ensureUploaded(ctx context.Context, objFile *objectfile.Mappe
 		}
 		defer os.Remove(f.Name())
 
-		if err := di.Extract(ctx, f, src); err != nil {
+		if err := di.Extract(ctx, f, srcFile); err != nil {
 			return fmt.Errorf("failed to extract debug information: %w", err)
 		}
 
@@ -232,21 +228,44 @@ func (di *Manager) ensureUploaded(ctx context.Context, objFile *objectfile.Mappe
 
 		r = f
 	} else {
-		f, err := os.Open(src)
-		if err != nil {
-			return fmt.Errorf("failed to open debug information: %w", err)
-		}
-		defer f.Close()
-
-		stat, err := f.Stat()
+		stat, err := srcFile.Stat()
 		if err != nil {
 			return fmt.Errorf("failed to stat the file: %w", err)
 		}
 		size = stat.Size()
 		modtime = stat.ModTime()
 
-		r = f
+		r = srcFile
 	}
+
+	objFile.ExtractedDebugFile = r // is this right?
+	objFile.ExtractedDebugFileSize = size
+	objFile.ExtractedDebugModTime = modtime
+
+	return nil
+}
+
+// extract
+// upload
+func (di *Manager) ensureUploaded(ctx context.Context, objFile *objectfile.MappedObjectFile) error {
+	buildID := objFile.BuildID
+	if di.alreadyUploading(buildID) {
+		return nil
+	}
+	di.markAsUploading(buildID)
+
+	// removing the buildID from the cache to ensure a re-upload at the next interation.
+	defer di.removeAsUploading(buildID)
+
+	if shouldInitiateUpload := di.shouldInitiateUpload(ctx, buildID, objFile.File); !shouldInitiateUpload {
+		return nil
+	}
+
+	///
+	r := objFile.ExtractedDebugFile
+	modtime := objFile.ExtractedDebugModTime
+	size := objFile.ExtractedDebugFileSize
+	///
 
 	// The hash is cached to avoid re-hashing the same binary
 	// and getting to the same result again.
@@ -260,7 +279,7 @@ func (di *Manager) ensureUploaded(ctx context.Context, objFile *objectfile.Mappe
 	if v, ok := di.hashCache.Load(key); ok {
 		h = v.(string) //nolint:forcetypeassert
 	} else {
-		h, err = hash.Reader(r)
+		h, err := hash.Reader(r)
 		if err != nil {
 			return fmt.Errorf("hash debuginfos: %w", err)
 		}

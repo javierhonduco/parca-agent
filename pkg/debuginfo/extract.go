@@ -23,8 +23,6 @@ import (
 	"strings"
 
 	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
-	"github.com/hashicorp/go-multierror"
 
 	"github.com/parca-dev/parca-agent/pkg/elfwriter"
 )
@@ -43,7 +41,7 @@ func NewExtractor(logger log.Logger) *Extractor {
 
 // ExtractAll extracts debug information from the given executables.
 // It consumes a map of file sources to extract and a destination io.Writer.
-func (e *Extractor) ExtractAll(ctx context.Context, srcDsts map[string]io.WriteSeeker) error {
+/* func (e *Extractor) ExtractAll(ctx context.Context, srcDsts map[string]io.WriteSeeker) error {
 	var result *multierror.Error
 	for src, dst := range srcDsts {
 		if err := e.Extract(ctx, dst, src); err != nil {
@@ -58,22 +56,16 @@ func (e *Extractor) ExtractAll(ctx context.Context, srcDsts map[string]io.WriteS
 		return result.ErrorOrNil()
 	}
 	return nil
-}
+} */
 
 // Extract extracts debug information from the given executable.
 // Cleaning up the temporary directory and the interim file is the caller's responsibility.
-func (e *Extractor) Extract(ctx context.Context, dst io.WriteSeeker, src string) error {
+func (e *Extractor) Extract(ctx context.Context, dst io.WriteSeeker, f *os.File) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
 	}
-
-	f, err := os.Open(src)
-	if err != nil {
-		return fmt.Errorf("error opening %s: %w", src, err)
-	}
-	defer f.Close()
 
 	w, err := elfwriter.NewFromSource(dst, f)
 	if err != nil {

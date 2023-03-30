@@ -77,7 +77,7 @@ func fromProcess(pid int, m *profile.Mapping) (*MappedObjectFile, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open mapped file: %w", err)
 	}
-	return &MappedObjectFile{ObjectFile: objFile, PID: pid, File: m.File}, nil
+	return &MappedObjectFile{ObjectFile: objFile, PID: pid, File: filePath}, nil
 }
 
 func cacheKey(m *profile.Mapping) string {

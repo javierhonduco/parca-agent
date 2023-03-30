@@ -482,7 +482,7 @@ func run(logger log.Logger, reg *prometheus.Registry, flags flags) error {
 				flags.Symbolizer.JITDisable,
 			),
 			process.NewMappingFileCache(logger),
-			objectfile.NewCache(20, flags.Profiling.Duration),
+			objectfile.NewCache(200, flags.Profiling.Duration),
 			profileWriter,
 			debuginfo.New(
 				log.With(logger, "component", "debuginfo"),
