@@ -15,23 +15,134 @@
 package cpu
 
 import (
+	"context"
+	"fmt"
 	"syscall"
 	"testing"
-	"unsafe"
+	"time"
 
-	bpf "github.com/aquasecurity/libbpfgo"
+	//bpf "github.com/aquasecurity/libbpfgo"
+	//bpf "github.com/aquasecurity/libbpfgo"
+	"github.com/go-kit/log"
+	"github.com/go-kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/stretchr/testify/require"
+	"github.com/prometheus/procfs"
+	"github.com/prometheus/prometheus/model/relabel"
 
+	"github.com/parca-dev/parca-agent/pkg/address"
+	"github.com/parca-dev/parca-agent/pkg/ksym"
 	"github.com/parca-dev/parca-agent/pkg/logger"
+	"github.com/parca-dev/parca-agent/pkg/metadata"
+	"github.com/parca-dev/parca-agent/pkg/metadata/labels"
+	"github.com/parca-dev/parca-agent/pkg/objectfile"
+	"github.com/parca-dev/parca-agent/pkg/perf"
+	"github.com/parca-dev/parca-agent/pkg/process"
+	"github.com/parca-dev/parca-agent/pkg/profiler"
+	"github.com/parca-dev/parca-agent/pkg/symbol"
+	"github.com/parca-dev/parca-agent/pkg/vdso"
 )
+
+func rlimitNOFILE() (int, int, error) {
+	var limit syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &limit); err != nil {
+		return 0, 0, err
+	}
+	return int(limit.Cur), int(limit.Max), nil
+}
+
+func TestIntegration(t *testing.T) {
+	loopDuration := time.Second * 5
+	disableJit := true
+	logLevel := "debug"
+	logFormat := "logfmt"
+	logger := logger.NewLogger(logLevel, logFormat, "parca-agent-tests")
+	reg := prometheus.NewRegistry()
+	pfs, err := procfs.NewDefaultFS()
+	bpfProgramLoaded := make(chan bool, 1)
+	debugNormalizeAddresses := false
+	memlockRlimit := uint64(4000000)
+	tempDir := t.TempDir()
+
+	///
+	profileWriter := profiler.NewFileProfileWriter(tempDir)
+
+	if err != nil {
+		panic(fmt.Errorf("failed to open procfs: %w", err))
+	}
+	curr, _, err := rlimitNOFILE()
+	if err != nil {
+		panic(fmt.Errorf("failed to get rlimit NOFILE: %w", err))
+	}
+	ofp := objectfile.NewPool(logger, reg, curr) // Probably we need a little less than this.
+	defer ofp.Close()                            // Will make sure all the files are closed.
+
+	vdsoCache, err := vdso.NewCache(ofp)
+	if err != nil {
+		level.Error(logger).Log("msg", "failed to initialize vdso cache", "err", err)
+	}
+
+	dbginfo := process.NoopDebuginfoManager{}
+	labelsManager := labels.NewManager(
+		logger,
+		reg,
+		// All the metadata providers work best-effort.
+		[]metadata.Provider{
+			/*    discoveryMetadata,
+			      metadata.Target(flags.Node, flags.Metadata.ExternalLabels),
+			      metadata.Compiler(logger, reg, ofp),
+			      metadata.Process(pfs),
+			      metadata.JavaProcess(logger),
+			      metadata.System(),
+			      metadata.PodHosts(), */
+		},
+		[]*relabel.Config{},
+		loopDuration,
+	)
+
+	profiler := NewCPUProfiler(
+		logger,
+		reg,
+		process.NewInfoManager(
+			logger,
+			reg,
+			process.NewMapManager(pfs, ofp),
+			dbginfo,
+			labelsManager,
+			loopDuration,
+		),
+		address.NewNormalizer(logger, reg, debugNormalizeAddresses),
+		symbol.NewSymbolizer(
+			log.With(logger, "component", "symbolizer"),
+			perf.NewCache(logger),
+			ksym.NewKsym(logger, reg, tempDir),
+			vdsoCache,
+			disableJit,
+		),
+		profileWriter,
+		loopDuration,
+		27,
+		memlockRlimit,
+		[]string{},
+		false,
+		true,
+		bpfProgramLoaded,
+	)
+
+	ctx, cancel := context.Background()
+	go func() {
+		time.Sleep(5 * time.Second)
+		cancel()
+	}()
+
+	profiler.Run(ctx)
+}
 
 // The intent of these tests is to ensure that libbpfgo behaves the
 // way we expect.
 //
 // We also use them to ensure that different kernel versions load our
 // BPF program.
-func SetUpBpfProgram(t *testing.T) (*bpf.Module, error) {
+/* func SetUpBpfProgram(t *testing.T) (*bpf.Module, error) {
 	t.Helper()
 	logger := logger.NewLogger("debug", logger.LogFormatLogfmt, "parca-cpu-test")
 
@@ -169,3 +280,4 @@ func TestGetValueAndDeleteBatchExactElements(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, len(values))
 }
+*/

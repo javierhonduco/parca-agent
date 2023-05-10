@@ -539,7 +539,7 @@ func run(logger log.Logger, reg *prometheus.Registry, flags flags) error {
 		)
 		defer dbginfo.Close()
 	} else {
-		dbginfo = noopDebuginfoManager{}
+		dbginfo = process.NoopDebuginfoManager{}
 	}
 
 	profilers := []Profiler{
@@ -910,15 +910,3 @@ func rlimitNOFILE() (int, int, error) {
 	}
 	return int(limit.Cur), int(limit.Max), nil
 }
-
-type noopDebuginfoManager struct{}
-
-func (noopDebuginfoManager) ExtractOrFindDebugInfo(context.Context, string, *objectfile.ObjectFile) error {
-	return nil
-}
-
-func (noopDebuginfoManager) UploadWithRetry(context.Context, *objectfile.ObjectFile) error {
-	return nil
-}
-func (noopDebuginfoManager) Upload(context.Context, *objectfile.ObjectFile) error { return nil }
-func (noopDebuginfoManager) Close() error                                         { return nil }
