@@ -80,6 +80,9 @@ func (s *Symbolizer) Symbolize(prof *profiler.Profile) error {
 	if s.vdsoCache != nil {
 		for _, l := range prof.UserLocations {
 			// TODO(kakkoyun): Or Use Mapping.Pathname
+			if l.Location.Mapping == nil {
+				continue
+			}
 			if l.Location.Mapping.File == "[vdso]" {
 				name, err := s.vdsoCache.Resolve(l.Address, l.Mapping)
 				if err != nil {

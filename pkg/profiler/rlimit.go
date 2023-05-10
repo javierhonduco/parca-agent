@@ -68,3 +68,14 @@ func HumanizeRLimit(val uint64) string {
 	}
 	return humanize.Bytes(val)
 }
+
+// FileLimit returns the currently opened file descriptors as
+// well as the maximum number of file descriptors that can be
+// opened by the calling process.
+func Files() (int, int, error) {
+	var limit syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &limit); err != nil {
+		return 0, 0, err
+	}
+	return int(limit.Cur), int(limit.Max) - 1, nil
+}
