@@ -716,7 +716,7 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
 
       err = bpf_probe_read_user(&next_fp, 8, (void *)unwind_state->bp);
       if (err < 0) {
-        // LOG("[debug] i=%d, err = %d && rbp = %llx && ra=%llx", i, err, next_fp, ra);
+        LOG("[debug] wj1 i=%d, err = %d && rbp = %llx && ra=%llx", i, err, next_fp, ra);
         return false;
       }
 
@@ -724,7 +724,7 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
       // reading return address
       err = bpf_probe_read_user(&ra, 8, (void *)unwind_state->bp + 8);
       if (err < 0) {
-        // LOG("[debug] incrementing ra i=%d, err = %d && rbp = %llx && ra=%llx", i, err, next_fp, ra);
+        LOG("[debug] wj2 i=%d, err = %d && rbp = %llx && ra=%llx", i, err, next_fp, ra);
         return false;
       }
 
