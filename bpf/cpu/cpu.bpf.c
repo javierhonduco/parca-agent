@@ -15,6 +15,9 @@
 #include <bpf/bpf_tracing.h>
 
 /*================================ CONSTANTS =================================*/
+// Programs.
+#define NATIVE_UNWINDER_PROGRAM_ID 0
+#define RUBY_UNWINDER_PROGRAM_ID 1
 
 // Number of frames to walk per tail call iteration.
 #define MAX_STACK_DEPTH_PER_PROGRAM 11
@@ -242,7 +245,7 @@ struct {
 
 struct {
   __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-  __uint(max_entries, 1);
+  __uint(max_entries, 3);
   __type(key, u32);
   __type(value, u32);
 } programs SEC(".maps");
@@ -1022,7 +1025,7 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
   } else if (unwind_state->stack.len < MAX_STACK_DEPTH && unwind_state->tail_calls < MAX_TAIL_CALLS) {
     LOG("Continuing walking the stack in a tail call, current tail %d", unwind_state->tail_calls);
     unwind_state->tail_calls++;
-    bpf_tail_call(ctx, &programs, 0);
+    bpf_tail_call(ctx, &programs, NATIVE_UNWINDER_PROGRAM_ID);
   }
 
   // We couldn't get the whole stacktrace.
@@ -1076,7 +1079,7 @@ static __always_inline int walk_user_stacktrace(struct bpf_perf_event_data *ctx)
   LOG("traversing stack using .eh_frame information!!");
   LOG("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
 
-  bpf_tail_call(ctx, &programs, 0);
+  bpf_tail_call(ctx, &programs, NATIVE_UNWINDER_PROGRAM_ID);
   return 0;
 }
 

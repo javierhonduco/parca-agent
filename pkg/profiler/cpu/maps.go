@@ -39,6 +39,7 @@ import (
 	"github.com/parca-dev/parca-agent/pkg/buildid"
 	"github.com/parca-dev/parca-agent/pkg/cache"
 	"github.com/parca-dev/parca-agent/pkg/elfreader"
+	"github.com/parca-dev/parca-agent/pkg/process"
 	"github.com/parca-dev/parca-agent/pkg/profiler"
 	"github.com/parca-dev/parca-agent/pkg/stack/unwind"
 )
@@ -364,6 +365,18 @@ func (m *bpfMaps) create() error {
 	m.processInfo = processInfo
 
 	return nil
+}
+
+func (m *bpfMaps) addInterpreter(interpreter process.Interpreter) {
+	// @nocommit
+	fmt.Println("== adding interpreter", interpreter.Name)
+
+	switch {
+	case interpreter.Name == process.Ruby:
+	default:
+		// @nocommit
+		fmt.Println("!! invalid interpreter", interpreter.Name)
+	}
 }
 
 func (m *bpfMaps) setDebugPIDs(pids []int) error {
