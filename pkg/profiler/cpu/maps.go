@@ -1035,7 +1035,7 @@ func (m *bpfMaps) setUnwindTableForMapping(buf *profiler.EfficientBuffer, pid in
 			// As we can't split an unwind table mid-function, let's create a new
 			// shard.
 			if threshold == 0 {
-				level.Info(m.logger).Log("msg", "creating a new shard to avoid splitting the unwind table for a function")
+				level.Debug(m.logger).Log("msg", "creating a new shard to avoid splitting the unwind table for a function")
 				if err := m.allocateNewShard(); err != nil {
 					return err
 				}
@@ -1115,7 +1115,7 @@ func (m *bpfMaps) setUnwindTableForMapping(buf *profiler.EfficientBuffer, pid in
 
 			// We ran out of space in the current shard. Let's allocate a new one.
 			if m.availableEntries() == 0 {
-				level.Info(m.logger).Log("msg", "creating a new shard as we ran out of space")
+				level.Debug(m.logger).Log("msg", "creating a new shard as we ran out of space")
 
 				if err := m.allocateNewShard(); err != nil {
 					return err

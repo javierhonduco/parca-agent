@@ -15,11 +15,14 @@ package process
 
 import (
 	"context"
+	"debug/elf"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -180,6 +183,18 @@ func NewInfoManager(
 	return im
 }
 
+type InterpreterType int
+
+const (
+	Ruby InterpreterType = iota
+)
+
+type Interpreter struct {
+	name              InterpreterType
+	version           string
+	mainThreadAddress uint64
+}
+
 type Info struct {
 	im  *InfoManager
 	pid int
@@ -189,7 +204,144 @@ type Info struct {
 	//   * "/proc/%d/root/tmp/perf-%d.map" or "/proc/%d/root/tmp/perf-%d.dump" for PerfMaps
 	//   * "/proc/%d/root/jit-%d.dump" for JITDUMP
 	// - Unwind Information
-	Mappings Mappings
+	interpreter *Interpreter
+	Mappings    Mappings
+}
+
+// fetchRubyInterpreterInfo receives a process' pid and mappings and figures out whether
+// it might be a Ruby interpreter. In that case, it returns an interpreter structure with
+// the data that's needed by rbperf (https://github.com/javierhonduco/rbperf) to unwind Ruby
+// stacks.
+func fetchRubyInterpreterInfo(pid int, mappings Mappings) (*Interpreter, error) {
+	var (
+		rubyBaseAddress    *uint64
+		librubyBaseAddress *uint64
+		librubyPath        string
+	)
+
+	for _, mapping := range mappings {
+		if strings.Contains(mapping.Pathname, "ruby") {
+			startAddr := uint64(mapping.StartAddr)
+			rubyBaseAddress = &startAddr
+		}
+
+		if strings.Contains(mapping.Pathname, "libruby") {
+			startAddr := uint64(mapping.StartAddr)
+			librubyPath = mapping.Pathname
+			librubyBaseAddress = &startAddr
+		}
+	}
+
+	// Doesn't seem like a Ruby process.
+	if rubyBaseAddress == nil && librubyBaseAddress == nil {
+		return nil, fmt.Errorf("Does not look like a Ruby Process")
+	}
+
+	rubyExecutable := ""
+	if librubyBaseAddress == nil {
+		rubyExecutable = path.Join("/proc/", fmt.Sprintf("%d", pid), "/exe")
+	} else {
+		rubyExecutable = path.Join("/proc/", fmt.Sprintf("%d", pid), "/root/", librubyPath)
+	}
+
+	// Fetch Ruby version
+	elfFile, err := elf.Open(rubyExecutable)
+	if err != nil {
+		return nil, fmt.Errorf("Error opening ELF: %w", err)
+	}
+
+	symbols, err := elfFile.Symbols()
+	if err != nil {
+		return nil, fmt.Errorf("Error reading ELF symbols: %w", err)
+	}
+
+	rubyVersion := ""
+	for _, symbol := range symbols {
+		if symbol.Name == "ruby_version" {
+			rubyVersionBuf := make([]byte, symbol.Size-1)
+			address := symbol.Value
+			f, err := os.Open(rubyExecutable)
+			if err != nil {
+				return nil, fmt.Errorf("Error opening ruby executable: %w", err)
+			}
+
+			f.Seek(int64(address), os.SEEK_SET)
+			f.Read(rubyVersionBuf)
+
+			rubyVersion = string(rubyVersionBuf)
+		}
+	}
+
+	// Could not find
+	if rubyVersion == "" {
+		return nil, fmt.Errorf("Could not find Ruby version")
+	}
+
+	splittedVersion := strings.Split(rubyVersion, ".")
+	major, err := strconv.Atoi(splittedVersion[0])
+	if err != nil {
+		return nil, fmt.Errorf("Could not parse version: %w", err)
+	}
+	minor, err := strconv.Atoi(splittedVersion[1])
+	if err != nil {
+		return nil, fmt.Errorf("Could not parse version: %w", err)
+	}
+
+	vmPointerSymbol := ""
+	if major == 2 && minor >= 5 {
+		vmPointerSymbol = "ruby_current_vm_ptr"
+	} else {
+		vmPointerSymbol = "ruby_current_vm"
+	}
+
+	mainThreadAddress := uint64(0)
+	for _, symbol := range symbols {
+		// TODO fix this
+		if strings.Contains(symbol.Name, vmPointerSymbol) {
+			mainThreadAddress = symbol.Value
+		}
+	}
+
+	if mainThreadAddress == 0 {
+		dynSymbols, err := elfFile.DynamicSymbols()
+		if err != nil {
+			return nil, fmt.Errorf("Error reading dynamic ELF symbols: %w", err)
+		}
+		for _, symbol := range dynSymbols {
+			// TODO fix this
+			if strings.Contains(symbol.Name, vmPointerSymbol) {
+				mainThreadAddress = symbol.Value
+			}
+		}
+	}
+
+	if mainThreadAddress == 0 {
+		panic("should not be zero")
+	}
+
+	if librubyBaseAddress == nil {
+		mainThreadAddress += *rubyBaseAddress
+	} else {
+		mainThreadAddress += *librubyBaseAddress
+	}
+
+	fmt.Println("=== main thread", mainThreadAddress, "vmpointer", vmPointerSymbol, "for pid", pid, "rubyVersion", rubyVersion)
+
+	return &Interpreter{
+		Ruby,
+		rubyVersion,
+		mainThreadAddress,
+	}, nil
+}
+
+func fetchInterpreterInfo(pid int, mappings Mappings) *Interpreter {
+	rubyInfo, err := fetchRubyInterpreterInfo(pid, mappings)
+	if err != nil {
+		return rubyInfo
+	}
+
+	// TODO pass the error
+	return nil
 }
 
 func (i Info) Labels(ctx context.Context) (model.LabelSet, error) {
@@ -263,9 +415,10 @@ func (im *InfoManager) fetch(ctx context.Context, pid int) (info Info, err error
 	// No matter what happens with the debug information, we should continue.
 	// And cache other process information.
 	info = Info{
-		im:       im,
-		pid:      pid,
-		Mappings: mappings,
+		im:          im,
+		pid:         pid,
+		interpreter: fetchInterpreterInfo(pid, mappings),
+		Mappings:    mappings,
 	}
 	im.cache.Add(pid, info)
 
