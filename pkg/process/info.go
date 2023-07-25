@@ -189,10 +189,19 @@ const (
 	Ruby InterpreterType = iota
 )
 
+func (it InterpreterType) String() string {
+	switch it {
+	case Ruby:
+		return "Ruby"
+	default:
+		return "<no string found>"
+	}
+}
+
 type Interpreter struct {
-	name              InterpreterType
-	version           string
-	mainThreadAddress uint64
+	Name              InterpreterType
+	Version           string
+	MainThreadAddress uint64
 }
 
 type Info struct {
@@ -204,13 +213,13 @@ type Info struct {
 	//   * "/proc/%d/root/tmp/perf-%d.map" or "/proc/%d/root/tmp/perf-%d.dump" for PerfMaps
 	//   * "/proc/%d/root/jit-%d.dump" for JITDUMP
 	// - Unwind Information
-	interpreter *Interpreter
+	Interpreter *Interpreter
 	Mappings    Mappings
 }
 
 // fetchRubyInterpreterInfo receives a process' pid and mappings and figures out whether
 // it might be a Ruby interpreter. In that case, it returns an interpreter structure with
-// the data that's needed by rbperf (https://github.com/javierhonduco/rbperf) to unwind Ruby
+// the data that's needed by rbperf (https://github.com/javierhonduco/rbperf) to walk Ruby
 // stacks.
 func fetchRubyInterpreterInfo(pid int, mappings Mappings) (*Interpreter, error) {
 	var (
@@ -325,18 +334,21 @@ func fetchRubyInterpreterInfo(pid int, mappings Mappings) (*Interpreter, error) 
 		mainThreadAddress += *librubyBaseAddress
 	}
 
-	fmt.Println("=== main thread", mainThreadAddress, "vmpointer", vmPointerSymbol, "for pid", pid, "rubyVersion", rubyVersion)
+	// @nocommit
+	fmt.Println("=== main Ruby thread", mainThreadAddress, "vmpointer", vmPointerSymbol, "for pid", pid, "rubyVersion", rubyVersion)
 
-	return &Interpreter{
+	interp := Interpreter{
 		Ruby,
 		rubyVersion,
 		mainThreadAddress,
-	}, nil
+	}
+
+	return &interp, nil
 }
 
 func fetchInterpreterInfo(pid int, mappings Mappings) *Interpreter {
 	rubyInfo, err := fetchRubyInterpreterInfo(pid, mappings)
-	if err != nil {
+	if err == nil {
 		return rubyInfo
 	}
 
@@ -417,9 +429,11 @@ func (im *InfoManager) fetch(ctx context.Context, pid int) (info Info, err error
 	info = Info{
 		im:          im,
 		pid:         pid,
-		interpreter: fetchInterpreterInfo(pid, mappings),
+		Interpreter: fetchInterpreterInfo(pid, mappings),
 		Mappings:    mappings,
 	}
+	fmt.Println(".... interpreter = ", info.Interpreter)
+
 	im.cache.Add(pid, info)
 
 	now = time.Now()

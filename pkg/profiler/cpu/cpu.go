@@ -220,11 +220,47 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 		return nil, nil, fmt.Errorf("failed to read BPF object: %w", err)
 	}
 
+	// rbperf
+	{
+		fmt.Println("=============== loading rbperf", lerr)
+		f, err := bpfObjects.Open(fmt.Sprintf("bpf/%s/rbperf.bpf.o", runtime.GOARCH))
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to open BPF object: %w", err)
+		}
+		// Note: no need to close this file, it's a virtual file from embed.FS, for
+		// which Close is a no-op.
+
+		bpfObj, err := io.ReadAll(f)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to read BPF object: %w", err)
+		}
+
+		m, err := bpf.NewModuleFromBufferArgs(bpf.NewModuleArgs{
+			BPFObjBuff: bpfObj,
+			BPFObjName: "parca-rbperf",
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("new bpf module: %w", err)
+		}
+
+		lerr = m.BPFLoadObject()
+		if lerr != nil {
+			fmt.Println(lerr)
+			panic("error loading rbperf")
+		}
+
+		prog, err := m.GetProgram("unwind_ruby_stack")
+		if err != nil {
+			fmt.Println(prog, err)
+			panic("error getting program")
+		}
+	}
+
 	// Adaptive unwind shard count sizing.
 	for i := 0; i < maxLoadAttempts; i++ {
 		m, err := bpf.NewModuleFromBufferArgs(bpf.NewModuleArgs{
 			BPFObjBuff: bpfObj,
-			BPFObjName: "parca",
+			BPFObjName: "parca-native",
 		})
 		if err != nil {
 			return nil, nil, fmt.Errorf("new bpf module: %w", err)
@@ -274,6 +310,7 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 			break
 		}
 	}
+
 	level.Error(logger).Log("msg", "Could not create unwind info shards", "lastError", lerr)
 	return nil, nil, lerr
 }
@@ -312,8 +349,14 @@ func (p *CPU) addUnwindTableForProcess(pid int) {
 }
 
 func (p *CPU) prefetchProcessInfo(ctx context.Context, pid int) {
-	if _, err := p.processInfoManager.Fetch(ctx, pid); err != nil {
+	procInfo, err := p.processInfoManager.Fetch(ctx, pid)
+	if err != nil {
 		level.Debug(p.logger).Log("msg", "failed to prefetch process info", "pid", pid, "err", err)
+	}
+
+	// This should only be called once.
+	if procInfo.Interpreter != nil {
+		p.bpfMaps.addInterpreter(*procInfo.Interpreter)
 	}
 }
 
