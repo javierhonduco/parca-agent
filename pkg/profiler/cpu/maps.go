@@ -1128,7 +1128,7 @@ func (m *bpfMaps) setUnwindTableForMapping(buf *profiler.EfficientBuffer, pid in
 
 			// We ran out of space in the current shard. Let's allocate a new one.
 			if m.availableEntries() == 0 {
-				level.Info(m.logger).Log("msg", "creating a new shard as we ran out of space")
+				level.Debug(m.logger).Log("msg", "creating a new shard as we ran out of space")
 
 				if err := m.allocateNewShard(); err != nil {
 					return err
