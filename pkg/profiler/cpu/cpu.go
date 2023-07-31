@@ -55,7 +55,8 @@ var (
 	//go:embed bpf/*
 	bpfObjects embed.FS
 
-	cpuProgramFd = uint64(0)
+	cpuProgramFd  = uint64(0)
+	rubyProgramFd = uint64(1)
 )
 
 const (
@@ -221,40 +222,9 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 	}
 
 	// rbperf
-	{
-		fmt.Println("=============== loading rbperf", lerr)
-		f, err := bpfObjects.Open(fmt.Sprintf("bpf/%s/rbperf.bpf.o", runtime.GOARCH))
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to open BPF object: %w", err)
-		}
-		// Note: no need to close this file, it's a virtual file from embed.FS, for
-		// which Close is a no-op.
-
-		bpfObj, err := io.ReadAll(f)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to read BPF object: %w", err)
-		}
-
-		m, err := bpf.NewModuleFromBufferArgs(bpf.NewModuleArgs{
-			BPFObjBuff: bpfObj,
-			BPFObjName: "parca-rbperf",
-		})
-		if err != nil {
-			return nil, nil, fmt.Errorf("new bpf module: %w", err)
-		}
-
-		lerr = m.BPFLoadObject()
-		if lerr != nil {
-			fmt.Println(lerr)
-			panic("error loading rbperf")
-		}
-
-		prog, err := m.GetProgram("unwind_ruby_stack")
-		if err != nil {
-			fmt.Println(prog, err)
-			panic("error getting program")
-		}
-	}
+	var (
+		rubyProg *bpf.BPFProg
+	)
 
 	// Adaptive unwind shard count sizing.
 	for i := 0; i < maxLoadAttempts; i++ {
@@ -297,8 +267,72 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 
 		lerr = m.BPFLoadObject()
 		if lerr == nil {
+			heapNative, err := m.GetMap("heap")
+			if err != nil {
+				panic(fmt.Errorf("get heapNative map: %w", err))
+			}
+
+			// HACK: add ruby unwinder program. Move this to a better location.
+			{
+
+				f, err := bpfObjects.Open(fmt.Sprintf("bpf/%s/rbperf.bpf.o", runtime.GOARCH))
+				if err != nil {
+					return nil, nil, fmt.Errorf("failed to open BPF object: %w", err)
+				}
+				// Note: no need to close this file, it's a virtual file from embed.FS, for
+				// which Close is a no-op.
+
+				bpfObj, err := io.ReadAll(f)
+				if err != nil {
+					return nil, nil, fmt.Errorf("failed to read BPF object: %w", err)
+				}
+
+				m, err := bpf.NewModuleFromBufferArgs(bpf.NewModuleArgs{
+					BPFObjBuff: bpfObj,
+					BPFObjName: "parca-rbperf",
+				})
+				if err != nil {
+					return nil, nil, fmt.Errorf("new bpf module: %w", err)
+				}
+
+				{
+					//////////////
+					heap, err := m.GetMap("heap")
+					if err != nil {
+						panic(fmt.Errorf("get heap map: %w", err))
+					}
+
+					bpf.MapReuseFd(heap, heapNative.FileDescriptor())
+				}
+
+				lerr = m.BPFLoadObject()
+				if lerr != nil {
+					fmt.Println(lerr)
+					panic("error loading rbperf")
+				}
+
+				rubyProg, err = m.GetProgram("unwind_ruby_stack")
+				if err != nil {
+					fmt.Println(rubyProg, err)
+					panic("error getting ruby program")
+				}
+
+				if rubyProg == nil {
+					panic("nil rubyProg")
+				}
+			}
+			rubyFd := rubyProg.FileDescriptor()
+			programs, err := m.GetMap(programsMapName)
+			if err != nil {
+				panic(fmt.Errorf("get programs map: %w", err))
+			}
+			if err = programs.Update(unsafe.Pointer(&rubyProgramFd), unsafe.Pointer(&rubyFd)); err != nil {
+				panic(fmt.Errorf("failure updating: %w", err))
+			}
+
 			return m, bpfMaps, nil
 		}
+
 		// There's not enough free memory for these many unwind shards, let's retry with half
 		// as many.
 		if errors.Is(lerr, syscall.ENOMEM) {
