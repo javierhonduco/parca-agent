@@ -1001,6 +1001,8 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
       bump_unwind_success_dwarf();
       // success_dwarf_to_jit keeps track of transition from DWARF unwinding to JIT unwinding
       dwarf_to_jit = true;
+      // Traverse interpreter stack.
+      bpf_tail_call(ctx, &programs, RUBY_UNWINDER_PROGRAM_ID);
     } else {
       int user_pid = pid_tgid;
       process_info_t *proc_info = bpf_map_lookup_elem(&process_info, &user_pid);
@@ -1157,6 +1159,8 @@ int profile_cpu(struct bpf_perf_event_data *ctx) {
   // pointers.
   if (has_fp(unwind_state->bp)) {
     add_stack(ctx, pid_tgid, STACK_WALKING_METHOD_FP, NULL);
+    // Traverse interpreter stack.
+    bpf_tail_call(ctx, &programs, RUBY_UNWINDER_PROGRAM_ID);
     return 0;
   }
 

@@ -61,6 +61,34 @@ struct {
     __type(value, SampleState);
 } global_state SEC(".maps");
 
+/////////////////////
+
+#define MAX_STACK_DEPTH 127
+
+
+typedef struct {
+  u64 len;
+  u64 addresses[MAX_STACK_DEPTH];
+} stack_trace_t;
+
+typedef struct {
+  u64 ip;
+  u64 sp;
+  u64 bp;
+  u32 tail_calls;
+  stack_trace_t stack;
+  bool unwinding_jit; // set to true during JITed unwinding; false unless mixed-mode unwinding is enabled
+} unwind_state_t;
+
+struct {
+  __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+  __uint(max_entries, 1);
+  __type(key, u32);
+  __type(value, unwind_state_t);
+} heap SEC(".maps");
+
+///////////////////////
+
 const volatile bool verbose = false;
 const volatile bool use_ringbuf = false;
 const volatile bool enable_pid_race_detector = true;
@@ -351,6 +379,15 @@ int walk_ruby_stack(struct bpf_perf_event_data *ctx) {
 
 SEC("perf_event")
 int unwind_ruby_stack(struct bpf_perf_event_data *ctx) {
+    bpf_printk("hi from ruby");
+    u64 zero = 0;
+    unwind_state_t *unwind_state = bpf_map_lookup_elem(&heap, &zero);
+    if (unwind_state == NULL) {
+        bpf_printk("[rbperf] unwind_state is NULL, should not happen");
+        return 1;
+    }
+    bpf_printk("[rbperf] unwind_state->len = %d", unwind_state->stack.len);
+
     u64 pid_tgid = bpf_get_current_pid_tgid();
     u32 pid = pid_tgid >> 32;
     // There's no point in checking for the swapper process.
