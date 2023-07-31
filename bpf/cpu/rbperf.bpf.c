@@ -12,6 +12,8 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
+#include "shared.h"
+
 /* struct {
     // This map's type is a placeholder, it's dynamically set
     // in rbperf.rs to either perf/ring buffer depending on
@@ -60,34 +62,6 @@ struct {
     __type(key, u32);
     __type(value, SampleState);
 } global_state SEC(".maps");
-
-/////////////////////
-
-#define MAX_STACK_DEPTH 127
-
-
-typedef struct {
-  u64 len;
-  u64 addresses[MAX_STACK_DEPTH];
-} stack_trace_t;
-
-typedef struct {
-  u64 ip;
-  u64 sp;
-  u64 bp;
-  u32 tail_calls;
-  stack_trace_t stack;
-  bool unwinding_jit; // set to true during JITed unwinding; false unless mixed-mode unwinding is enabled
-} unwind_state_t;
-
-struct {
-  __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-  __uint(max_entries, 1);
-  __type(key, u32);
-  __type(value, unwind_state_t);
-} heap SEC(".maps");
-
-///////////////////////
 
 const volatile bool verbose = false;
 const volatile bool use_ringbuf = false;
@@ -369,6 +343,7 @@ int walk_ruby_stack(struct bpf_perf_event_data *ctx) {
         LOG("[error] stack size %d, expected %d", state->stack.size, state->stack.expected_size);
     }
 
+    aggregate_stacks();
 /*     if (use_ringbuf) {
         bpf_ringbuf_output(&events, &state->stack, sizeof(RubyStack), 0);
     } else {

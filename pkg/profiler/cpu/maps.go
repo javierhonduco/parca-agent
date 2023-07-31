@@ -614,7 +614,6 @@ func (m *bpfMaps) addUnwindTableForProcess(pid int, executableMappings unwind.Ex
 	}
 
 	// Important: the below *must* be called before setUnwindTable.
-	// .is_jit_compiler
 	var isJitCompiler uint64
 	if executableMappings.HasJitted() {
 		isJitCompiler = 1
@@ -625,8 +624,10 @@ func (m *bpfMaps) addUnwindTableForProcess(pid int, executableMappings unwind.Ex
 	}
 
 	mappingInfoMemory := m.mappingInfoMemory.Slice(mappingInfoSizeBytes)
-	// .type
+	// .is_jit_compiler
 	mappingInfoMemory.PutUint64(isJitCompiler)
+	// .interpreter_type
+	mappingInfoMemory.PutUint64(1)
 	// .len
 	mappingInfoMemory.PutUint64(uint64(len(executableMappings)))
 
