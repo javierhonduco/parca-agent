@@ -305,6 +305,20 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 					bpf.MapReuseFd(heap, heapNative.FileDescriptor())
 				}
 
+				{
+					stackCountsNative, err := m.GetMap("stack_counts")
+					if err != nil {
+						panic(fmt.Errorf("get stack_counts map: %w", err))
+					}
+
+					stackCounts, err := m.GetMap("stack_counts")
+					if err != nil {
+						panic(fmt.Errorf("get stack_counts map: %w", err))
+					}
+
+					bpf.MapReuseFd(stackCounts, stackCountsNative.FileDescriptor())
+				}
+
 				lerr = m.BPFLoadObject()
 				if lerr != nil {
 					fmt.Println(lerr)

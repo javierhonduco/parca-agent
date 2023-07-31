@@ -13,6 +13,7 @@
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
+#include "shared.h"
 
 /*================================ CONSTANTS =================================*/
 // Programs.
@@ -28,8 +29,6 @@
 _Static_assert(MAX_TAIL_CALLS *MAX_STACK_DEPTH_PER_PROGRAM >= MAX_STACK_DEPTH, "enough iterations to traverse the whole stack");
 // Number of unique stacks.
 #define MAX_STACK_TRACES_ENTRIES 64000
-// Number of items in the stack counts aggregation map.
-#define MAX_STACK_COUNTS_ENTRIES 10240
 // Maximum number of processes we are willing to track.
 #define MAX_PROCESSES 5000
 // Binary search iterations for dwarf based stack walking.
@@ -84,6 +83,11 @@ enum stack_walking_method {
   STACK_WALKING_METHOD_DWARF = 1,
 };
 
+enum interpreter_type {
+  INTERPRETER_TYPE_UNDEFINED = 0,
+  INTERPRETER_TYPE_RUBY = 1,
+};
+
 struct unwinder_config_t {
   bool filter_processes;
   bool verbose_logging;
@@ -123,8 +127,7 @@ typedef u64 stack_trace_type[MAX_STACK_DEPTH];
 
 #define BPF_HASH(_name, _key_type, _value_type, _max_entries) BPF_MAP(_name, BPF_MAP_TYPE_HASH, _key_type, _value_type, _max_entries);
 
-// A different stack produced the same hash.
-#define STACK_COLLISION(err) (err == -EEXIST)
+
 // Tried to read a kernel stack from a non-kernel context.
 #define IN_USERSPACE(err) (err == -EFAULT)
 
@@ -152,20 +155,6 @@ typedef struct {
   chunk_info_t chunks[MAX_UNWIND_TABLE_CHUNKS];
 } unwind_info_chunks_t;
 
-// The addresses of a native stack trace.
-typedef struct {
-  u64 len;
-  u64 addresses[MAX_STACK_DEPTH];
-} stack_trace_t;
-
-typedef struct {
-  int pid;
-  int tgid;
-  int user_stack_id;
-  int kernel_stack_id;
-  int user_stack_id_dwarf;
-} stack_count_key_t;
-
 // Represents an executable mapping.
 typedef struct {
   u64 load_address;
@@ -178,20 +167,10 @@ typedef struct {
 // Executable mappings for a process.
 typedef struct {
   u64 is_jit_compiler;
+  u64 interpreter_type;
   u64 len;
   mapping_t mappings[MAX_MAPPINGS_PER_PROCESS];
 } process_info_t;
-
-// State of unwinder such as the registers as well
-// as internal data.
-typedef struct {
-  u64 ip;
-  u64 sp;
-  u64 bp;
-  u32 tail_calls;
-  stack_trace_t stack;
-  bool unwinding_jit; // set to true during JITed unwinding; false unless mixed-mode unwinding is enabled
-} unwind_state_t;
 
 // A row in the stack unwinding table for x86_64.
 typedef struct __attribute__((packed)) {
@@ -215,19 +194,11 @@ BPF_HASH(process_info, int, process_info_t, MAX_PROCESSES);
 
 BPF_STACK_TRACE(stack_traces, MAX_STACK_TRACES_ENTRIES);
 BPF_HASH(dwarf_stack_traces, int, stack_trace_t, MAX_STACK_TRACES_ENTRIES);
-BPF_HASH(stack_counts, stack_count_key_t, u64, MAX_STACK_COUNTS_ENTRIES);
 
 BPF_HASH(unwind_info_chunks, u64, unwind_info_chunks_t,
          5 * 1000); // Mapping of executable ID to unwind info chunks.
 BPF_HASH(unwind_tables, u64, stack_unwind_table_t,
          5); // Table size will be updated in userspace.
-
-struct {
-  __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-  __uint(max_entries, 1);
-  __type(key, u32);
-  __type(value, unwind_state_t);
-} heap SEC(".maps");
 
 struct {
   __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -304,24 +275,6 @@ static void bump_samples() {
     unwind_print_stats();
   }
   bump_unwind_total();
-}
-
-static __always_inline void *bpf_map_lookup_or_try_init(void *map, const void *key, const void *init) {
-  void *val;
-  long err;
-
-  val = bpf_map_lookup_elem(map, key);
-  if (val) {
-    return val;
-  }
-
-  err = bpf_map_update_elem(map, key, init, BPF_NOEXIST);
-  if (err && !STACK_COLLISION(err)) {
-    LOG("[error] bpf_map_lookup_or_try_init with ret: %d", err);
-    return 0;
-  }
-
-  return bpf_map_lookup_elem(map, key);
 }
 
 /*================================= EVENTS ==================================*/
@@ -602,8 +555,7 @@ static __always_inline bool has_fp(u64 current_fp) {
 
 // Aggregate the given stacktrace.
 static __always_inline void add_stack(struct bpf_perf_event_data *ctx, u64 pid_tgid, enum stack_walking_method method, unwind_state_t *unwind_state) {
-  u64 zero = 0;
-  stack_count_key_t stack_key = {0};
+  stack_count_key_t *stack_key = &unwind_state->stack_key;
 
   // The `bpf_get_current_pid_tgid` helpers returns
   // `current_task->tgid << 32 | current_task->pid`, the naming can be
@@ -614,13 +566,13 @@ static __always_inline void add_stack(struct bpf_perf_event_data *ctx, u64 pid_t
   // - What we call threads IDs in user space, are PIDs in kernel space.
   int user_pid = pid_tgid >> 32;
   int user_tgid = pid_tgid;
-  stack_key.pid = user_pid;
-  stack_key.tgid = user_tgid;
+  stack_key->pid = user_pid;
+  stack_key->tgid = user_tgid;
 
   if (method == STACK_WALKING_METHOD_DWARF) {
     int stack_hash = MurmurHash2((u32 *)unwind_state->stack.addresses, MAX_STACK_DEPTH * sizeof(u64) / sizeof(u32), 0);
     LOG("stack hash %d", stack_hash);
-    stack_key.user_stack_id_dwarf = stack_hash;
+    stack_key->user_stack_id_dwarf = stack_hash;
 
     // Insert stack.
     int err = bpf_map_update_elem(&dwarf_stack_traces, &stack_hash, &unwind_state->stack, BPF_ANY);
@@ -637,7 +589,9 @@ static __always_inline void add_stack(struct bpf_perf_event_data *ctx, u64 pid_t
       LOG("[warn] bpf_get_stackid user failed with %d", stack_id);
       return;
     }
-    stack_key.user_stack_id = stack_id;
+    stack_key->user_stack_id = stack_id;
+  } else {
+    LOG("[error] invalid native unwinding method: %d", method);
   }
 
   // Get kernel stack.
@@ -646,15 +600,31 @@ static __always_inline void add_stack(struct bpf_perf_event_data *ctx, u64 pid_t
     LOG("[warn] bpf_get_stackid kernel failed with %d", kernel_stack_id);
     return;
   }
-  stack_key.kernel_stack_id = kernel_stack_id;
+  stack_key->kernel_stack_id = kernel_stack_id;
 
-  // Aggregate stacks.
-  u64 *scount = bpf_map_lookup_or_try_init(&stack_counts, &stack_key, &zero);
-  if (scount) {
-    __sync_fetch_and_add(scount, 1);
+  // Continue unwinding interpreter, if any.
+  process_info_t *proc_info = bpf_map_lookup_elem(&process_info, &user_tgid); // @nocommit: should be the other one, this is completely wrong... are we mixing up things above?
+  if (proc_info == NULL) {
+    LOG("[error] should never happen");
+    return;
+  }
+
+  switch (proc_info->interpreter_type) {
+    case INTERPRETER_TYPE_UNDEFINED:
+      bpf_printk("[debug] not an interpreter");
+      aggregate_stacks();
+      break;
+    case INTERPRETER_TYPE_RUBY:
+      bpf_printk("[debug] Ruby interpreter");
+      bpf_tail_call(ctx, &programs, RUBY_UNWINDER_PROGRAM_ID);
+      break;
+    default:
+      bpf_printk("[warn] bad interpreter value: %d", proc_info->interpreter_type);
+      break;
   }
 
   request_process_mappings(ctx, user_pid);
+  return;
 }
 
 // The unwinding machinery lives here.
@@ -953,10 +923,8 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
 
     if (unwind_state->bp == 0) {
       LOG("======= reached main! =======");
-      add_stack(ctx, pid_tgid, STACK_WALKING_METHOD_DWARF, unwind_state);
       bump_unwind_success_dwarf();
-      // Traverse interpreter stack.
-      bpf_tail_call(ctx, &programs, RUBY_UNWINDER_PROGRAM_ID);
+      add_stack(ctx, pid_tgid, STACK_WALKING_METHOD_DWARF, unwind_state);
     } else {
       int user_pid = pid_tgid;
       process_info_t *proc_info = bpf_map_lookup_elem(&process_info, &user_pid);
@@ -992,7 +960,7 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
 static __always_inline bool set_initial_state(bpf_user_pt_regs_t *regs) {
   u32 zero = 0;
 
-  unwind_state_t *unwind_state = bpf_map_lookup_elem(&heap, &zero);
+  unwind_state_t *unwind_state = bpf_map_lookup_elem(&heap, &zero); // @nocommit: zero's type?
   if (unwind_state == NULL) {
     // This should never happen.
     return false;
@@ -1003,6 +971,12 @@ static __always_inline bool set_initial_state(bpf_user_pt_regs_t *regs) {
   unwind_state->stack.len = 0;
   unwind_state->tail_calls = 0;
   unwind_state->unwinding_jit = false;
+  // Reset key.
+  unwind_state->stack_key.kernel_stack_id = 0;
+  unwind_state->stack_key.pid = 0;
+  unwind_state->stack_key.tgid = 0;
+  unwind_state->stack_key.user_stack_id = 0;
+  unwind_state->stack_key.user_stack_id_dwarf = 0;
 
   u64 ip = 0;
   u64 sp = 0;
@@ -1112,9 +1086,7 @@ int profile_cpu(struct bpf_perf_event_data *ctx) {
   // 2. We did not have unwind information, let's see if we can unwind with frame
   // pointers.
   if (has_fp(unwind_state->bp)) {
-    add_stack(ctx, pid_tgid, STACK_WALKING_METHOD_FP, NULL);
-    // Traverse interpreter stack.
-    bpf_tail_call(ctx, &programs, RUBY_UNWINDER_PROGRAM_ID);
+    add_stack(ctx, pid_tgid, STACK_WALKING_METHOD_FP, unwind_state);
     return 0;
   }
 
