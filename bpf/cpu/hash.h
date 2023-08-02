@@ -1,9 +1,11 @@
+#include <bpf/bpf_helpers.h>
+
 // Avoid pulling in any other headers.
 typedef unsigned int uint32_t;
 
 // murmurhash2 from
 // https://github.com/aappleby/smhasher/blob/92cf3702fcfaadc84eb7bef59825a23e0cd84f56/src/MurmurHash2.cpp
-uint32_t MurmurHash2(const void *key, int len, uint32_t seed) {
+static __always_inline uint32_t MurmurHash2(const void *key, int len, uint32_t seed) {
   /* 'm' and 'r' are mixing constants generated offline.
      They're not really 'magic', they just happen to work well.  */
 
@@ -19,9 +21,6 @@ uint32_t MurmurHash2(const void *key, int len, uint32_t seed) {
   const unsigned char *data = (const unsigned char *)key;
   // MAX_STACK_DEPTH * 2 = 256 (because we hash 32 bits at a time).
   for (int i = 0; i < 256; i++) {
-    if (len < 4) {
-      break;
-    }
     uint32_t k = *(uint32_t *)data;
 
     k *= m;
@@ -34,18 +33,6 @@ uint32_t MurmurHash2(const void *key, int len, uint32_t seed) {
     data += 4;
     len -= 4;
   }
-
-  /* Handle the last few bytes of the input array  */
-
-  switch (len) {
-  case 3:
-    h ^= data[2] << 16;
-  case 2:
-    h ^= data[1] << 8;
-  case 1:
-    h ^= data[0];
-    h *= m;
-  };
 
   /* Do a few final mixes of the hash to ensure the last few
   // bytes are well-incorporated.  */

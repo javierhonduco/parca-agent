@@ -321,6 +321,14 @@ int walk_ruby_stack(struct bpf_perf_event_data *ctx) {
 
         long long int actual_index = state->stack.size;
         if (actual_index >= 0 && actual_index < MAX_STACK) {
+            // The line below is causing the verifier to complain in 5.4 and 5.10
+            // [            ] stderr: level=debug name=parca-cpu-test ts=2023-08-02T12:23:18.068259872Z caller=cpu.go:208 msg="libbpf: prog 'unwind_ruby_stack': relo #0: patched insn #73 (ALU/ALU64) imm 1256 -> 1480\n"
+            // [            ] stderr: level=debug name=parca-cpu-test ts=2023-08-02T12:23:18.088013655Z caller=cpu.go:208 msg="libbpf: prog 'walk_ruby_stack': BPF program load failed: Invalid argument\n"
+            // [            ] stderr: level=debug name=parca-cpu-test ts=2023-08-02T12:23:18.093463732Z caller=cpu.go:208 msg="libbpf: prog 'walk_ruby_stack': -- BEGIN PROG LOAD LOG --\nBPF_STX uses reserved fields\nprocessed 0 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_states 0 mark_read 0\n-- END PROG LOAD LOG --\n"
+            // [            ] stderr: level=debug name=parca-cpu-test ts=2023-08-02T12:23:18.095551952Z caller=cpu.go:208 msg="libbpf: prog 'walk_ruby_stack': failed to load: -22\n"
+            // [            ] stderr: level=debug name=parca-cpu-test ts=2023-08-02T12:23:18.098467438Z caller=cpu.go:208 msg="libbpf: failed to load object 'parca-rbperf'\n"
+            // [            ] stderr: panic: error loading rbperf [recovered]
+            // [            ] stderr: 	panic: error loading rbperf
             state->stack.frames[actual_index] = find_or_insert_frame(&current_frame);
             state->stack.size += 1;
         }
