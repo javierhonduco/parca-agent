@@ -278,6 +278,11 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 				panic(fmt.Errorf("get heapNative map: %w", err))
 			}
 
+			stackCountNative, err := m.GetMap("stack_counts")
+			if err != nil {
+				panic(fmt.Errorf("get stack_counts map: %w", err))
+			}
+
 			// HACK: add ruby unwinder program. Move this to a better location.
 			{
 
@@ -303,26 +308,31 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 
 				{
 					//////////////
-					heap, err := m.GetMap("heap")
+					rubyHeap, err := m.GetMap("heap")
 					if err != nil {
 						panic(fmt.Errorf("get heap map: %w", err))
 					}
 
-					bpf.MapReuseFd(heap, heapNative.FileDescriptor())
+					err = rubyHeap.MapReuseFd(heapNative.FileDescriptor())
+					if err != nil {
+						panic(fmt.Errorf("reuse map: %w", err))
+					}
+
+					// panic(rubyHeap.FileDescriptor() - heapNative.FileDescriptor())
+
 				}
 
 				{
-					stackCountsNative, err := m.GetMap("stack_counts")
+					RubystackCounts, err := m.GetMap("stack_counts")
 					if err != nil {
 						panic(fmt.Errorf("get stack_counts map: %w", err))
 					}
 
-					stackCounts, err := m.GetMap("stack_counts")
+					err = RubystackCounts.MapReuseFd(stackCountNative.FileDescriptor())
 					if err != nil {
-						panic(fmt.Errorf("get stack_counts map: %w", err))
+						panic(fmt.Errorf("reuse map: %w", err))
 					}
 
-					bpf.MapReuseFd(stackCounts, stackCountsNative.FileDescriptor())
 				}
 
 				lerr = m.BPFLoadObject()
