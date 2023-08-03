@@ -65,7 +65,7 @@ struct {
 
 const volatile bool verbose = false;
 const volatile bool use_ringbuf = false;
-const volatile bool enable_pid_race_detector = true;
+const volatile bool enable_pid_race_detector = false;
 const volatile enum rbperf_event_type event_type = RBPERF_EVENT_UNKNOWN;
 
 #define LOG(fmt, ...)                       \
@@ -153,83 +153,20 @@ read_ruby_lineno(u64 pc, u64 body, RubyVersionOffsets *version_offsets) {
         pos -= rb_value_sizeof;
     }
 
-    u64 positions;
-    rbperf_read(
-        &positions, 8,
-        (void *)(body + 128));
-
-    if (positions != 0) {
-        bpf_printk("======!!!! positions: %d", positions);
-        return 424242;
-    }
-
-#define IMMEDIATE_TABLE_SIZE 54 /* a multiple of 9, and < 128 */
-
-    u64 succ_index_table;
-    rbperf_read(
-        &succ_index_table, 8,
-        (void *)(body + 144));
-
-    if(succ_index_table < IMMEDIATE_TABLE_SIZE) {
-        bpf_printk(".... succ_index_table < IMMEDIATE_TABLE_SIZE");
-    }else {
-        bpf_printk(".... succ_index_table >= IMMEDIATE_TABLE_SIZE");
-    }
-
-   /*      const int block_index = (x - IMMEDIATE_TABLE_SIZE) / 512;
-           const int block_bit_index = (x - IMMEDIATE_TABLE_SIZE) % 512;
-        const int small_block_index = block_bit_index / 64;
-
-        const struct succ_dict_block *block = &sd->succ_part[block_index];
-        const int small_block_popcount = small_block_rank_get(block->small_block_ranks, small_block_index);
-        const int popcnt = rb_popcount64(block->bits[small_block_index] << (63 - block_bit_index % 64));
-        block->rank + small_block_popcount + popcnt;
-        */
-
-        //int block_index = (succ_index_table - IMMEDIATE_TABLE_SIZE) / 512;
-        //int block_bit_index = (succ_index_table - IMMEDIATE_TABLE_SIZE) % 512;
-        //int small_block_index = block_bit_index / 64;
-
-
-
-/*     u64 succ_index_table_addr;
-    rbperf_read(
-        &succ_index_table_addr, 8,
-        (void *)(body + 128 + 8 + 4));
-
-    u64 succ_dict_block;
-    rbperf_read(
-        &succ_dict_block, 8,
-        (void *)(succ_index_table_addr + block_index));
-    }
- */
-    //bpf_printk(".... lineno: %d", succ_dict_block + 0 + 0);
-
-// https://github.com/ruby/ruby/blob/c37ebfe08fb43242687e58a68628ade8101973d7/iseq.c#L1810
-// https://github.com/ruby/ruby/blob/c37ebfe08fb43242687e58a68628ade8101973d7/iseq.c#L3727
-
-
     rbperf_read(&line_info_size, 4,
                 (void *)(body + version_offsets->line_info_size_offset));
-
-
     if (line_info_size == 0) {
-                bpf_printk("errr");
-
-        return 434343;
-    }
-
-    if (line_info_size == 1) {
-        bpf_printk("fuck yeah");
+        return 0;
+    } else if (line_info_size == 1) {
         rbperf_read(&lineno, 4, (void *)(info_table + (0) * 0x8 + version_offsets->lineno_offset));
         return lineno;
+    } else {
+        // Note: this is not fully correct as we don't implement get_insn_info_linear_search or
+        // get_insn_info_succinct_bitvector. Line numbers might be biased.
+        // See https://github.com/ruby/ruby/blob/7b2306a3ab2a7d33c5c5c8ac248447349874b258/.gdbinit#L1015
+        rbperf_read(&lineno, 4, (void *)(info_table + (line_info_size - 1) * 0x8 + version_offsets->lineno_offset));
+        return lineno;
     }
-
-    // Note: this is not fully correct as we don't implement get_insn_info_linear_search or
-    // get_insn_info_succinct_bitvector. Line numbers might be biased.
-    // See https://github.com/ruby/ruby/blob/7b2306a3ab2a7d33c5c5c8ac248447349874b258/.gdbinit#L1015
-    rbperf_read(&lineno, 4, (void *)(info_table + (line_info_size - 1) * 0x8 + version_offsets->lineno_offset));
-    return lineno;
 }
 
 static inline_method void
@@ -271,6 +208,7 @@ read_frame(u64 pc, u64 body, RubyFrame *current_frame,
     read_ruby_string(version_offsets, label, current_frame->method_name,
                      sizeof(current_frame->method_name));
 
+    bpf_printk("[debug] method name=%s", current_frame->method_name);
     LOG("[debug] method name=%s", current_frame->method_name);
 }
 
@@ -280,22 +218,27 @@ int walk_ruby_stack(struct bpf_perf_event_data *ctx) {
     u64 pc;
     u64 pc_addr;
     u64 body;
+        bpf_printk("======== 1");
 
     int zero = 0;
     SampleState *state = bpf_map_lookup_elem(&global_state, &zero);
     if (state == NULL) {
         return 0;  // this should never happen
     }
+            bpf_printk("======== 2");
+
     RubyVersionOffsets *version_offsets = bpf_map_lookup_elem(&version_specific_offsets, &state->rb_version);
     if (version_offsets == NULL) {
         return 0;  // this should not happen
     }
+        bpf_printk("======== 3");
 
     RubyFrame current_frame = {};
     u64 base_stack = state->base_stack;
     u64 cfp = state->cfp;
     state->ruby_stack_program_count += 1;
     u64 control_frame_t_sizeof = version_offsets->control_frame_t_sizeof;
+        bpf_printk("======== 4");
 
 #pragma unroll
     for (int i = 0; i < MAX_STACKS_PER_PROGRAM; i++) {
@@ -361,7 +304,7 @@ int unwind_ruby_stack(struct bpf_perf_event_data *ctx) {
         bpf_printk("[rbperf] unwind_state is NULL, should not happen");
         return 1;
     }
-    bpf_printk("[rbperf] unwind_state->len = %d", unwind_state->stack.len);
+    // bpf_printk("[rbperf] unwind_state->len = %d", unwind_state->stack.len);
 
     u64 pid_tgid = bpf_get_current_pid_tgid();
     u32 pid = pid_tgid >> 32;
@@ -373,7 +316,6 @@ int unwind_ruby_stack(struct bpf_perf_event_data *ctx) {
     ProcessData *process_data = bpf_map_lookup_elem(&pid_to_rb_thread, &pid);
 
     if (process_data != NULL && process_data->rb_frame_addr != 0) {
-        // bpf_printk("doing it!? pid %d other %d", pid, (int)pid_tgid);
 
         bpf_printk("[debug] reading Ruby stack");
 
@@ -391,7 +333,7 @@ int unwind_ruby_stack(struct bpf_perf_event_data *ctx) {
         // it to the actual start time. Otherwise, we check that the start_time
         // of the process matches what we expect. If it's not the case, bail out
         // early, to avoid profiling the wrong process.
-        if (enable_pid_race_detector) {
+/*         if (enable_pid_race_detector) {
             u64 process_start_time;
             bpf_core_read(&process_start_time, 8, &task->start_time);
 
@@ -406,7 +348,7 @@ int unwind_ruby_stack(struct bpf_perf_event_data *ctx) {
                 }
             }
         }
-
+ */
         u64 ruby_current_thread_addr;
         u64 main_thread_addr;
         u64 ec_addr;
@@ -470,11 +412,10 @@ int unwind_ruby_stack(struct bpf_perf_event_data *ctx) {
         state->ruby_stack_program_count = 0;
         state->rb_version = process_data->rb_version;
 
-        //bpf_printk("yesss!? pid %d other %d", pid, (int)pid_tgid);
-
+        bpf_printk("about to tail call to %d", RBPERF_STACK_READING_PROGRAM_IDX);
         bpf_tail_call(ctx, &programs, RBPERF_STACK_READING_PROGRAM_IDX);
         // This will never be executed
-
+        bpf_printk("🙅🏻‍♂️");
         return 0;
     } else {
         bpf_printk("[error] not a ruby proc");
