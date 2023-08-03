@@ -87,25 +87,25 @@ type SampleState = struct {
 } /* rbperf.h:110:3 */
 
 type ProcessData = struct {
-	rb_frame_addr u64
-	rb_version    u32
-	_             [4]byte
-	start_time    u64
+	Rb_frame_addr u64
+	Rb_version    u32
+	Padding_             [4]byte
+	Start_time    u64
 } /* rbperf.h:116:3 */
 
 type RubyVersionOffsets = struct {
-	major_version          int32
-	minor_version          int32
-	patch_version          int32
-	vm_offset              int32
-	vm_size_offset         int32
-	control_frame_t_sizeof int32
-	cfp_offset             int32
-	label_offset           int32
-	path_flavour           int32
-	line_info_size_offset  int32
-	line_info_table_offset int32
-	lineno_offset          int32
-	main_thread_offset     int32
-	ec_offset              int32
+	Major_version          int32
+	Minor_version          int32
+	Patch_version          int32
+	Vm_offset              int32
+	Vm_size_offset         int32
+	Control_frame_t_sizeof int32
+	Cfp_offset             int32
+	Label_offset           int32
+	Path_flavour           int32
+	Line_info_size_offset  int32
+	Line_info_table_offset int32
+	Lineno_offset          int32
+	Main_thread_offset     int32
+	Ec_offset              int32
 } /* rbperf.h:133:3 */

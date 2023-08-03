@@ -56,8 +56,11 @@ var (
 	//go:embed bpf/*
 	bpfObjects embed.FS
 
-	cpuProgramFd  = uint64(0)
-	rubyProgramFd = uint64(1)
+	// native programs
+	cpuProgramFd            = uint64(0)
+	rubyEntrypointProgramFd = uint64(1)
+	// rbperf programs
+	rubyUnwinderProgramFd = uint64(0)
 )
 
 const (
@@ -224,12 +227,12 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 
 	// rbperf
 	var (
-		rubyProg *bpf.BPFProg
+		rubyEntrypointProg *bpf.BPFProg
 	)
 
 	// Adaptive unwind shard count sizing.
 	for i := 0; i < maxLoadAttempts; i++ {
-		m, err := bpf.NewModuleFromBufferArgs(bpf.NewModuleArgs{
+		nativeModule, err := bpf.NewModuleFromBufferArgs(bpf.NewModuleArgs{
 			BPFObjBuff: bpfObj,
 			BPFObjName: "parca-native",
 		})
@@ -245,7 +248,7 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 		level.Debug(logger).Log("msg", "actual memory locked rlimit", "cur", rlimit.HumanizeRLimit(rLimit.Cur), "max", rlimit.HumanizeRLimit(rLimit.Max))
 
 		// Maps must be initialized before loading the BPF code.
-		bpfMaps, err := initializeMaps(logger, reg, m, binary.LittleEndian)
+		bpfMaps, err := initializeMaps(logger, reg, nativeModule, binary.LittleEndian)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize eBPF maps: %w", err)
 		}
@@ -262,18 +265,18 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 			return nil, nil, fmt.Errorf("failed to adjust map sizes: %w", err)
 		}
 
-		if err := m.InitGlobalVariable(configKey, Config{FilterProcesses: debugEnabled, VerboseLogging: verboseBpfLogging, MixedStackWalking: mixedUnwinding}); err != nil {
+		if err := nativeModule.InitGlobalVariable(configKey, Config{FilterProcesses: debugEnabled, VerboseLogging: verboseBpfLogging, MixedStackWalking: mixedUnwinding}); err != nil {
 			return nil, nil, fmt.Errorf("init global variable: %w", err)
 		}
 
-		lerr = m.BPFLoadObject()
+		lerr = nativeModule.BPFLoadObject()
 		if lerr == nil {
-			heapNative, err := m.GetMap("heap")
+			heapNative, err := nativeModule.GetMap("heap")
 			if err != nil {
 				panic(fmt.Errorf("get heapNative map: %w", err))
 			}
 
-			stackCountNative, err := m.GetMap("stack_counts")
+			stackCountNative, err := nativeModule.GetMap("stack_counts")
 			if err != nil {
 				panic(fmt.Errorf("get stack_counts map: %w", err))
 			}
@@ -293,7 +296,7 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 					return nil, nil, fmt.Errorf("failed to read BPF object: %w", err)
 				}
 
-				m, err := bpf.NewModuleFromBufferArgs(bpf.NewModuleArgs{
+				mRuby, err := bpf.NewModuleFromBufferArgs(bpf.NewModuleArgs{
 					BPFObjBuff: bpfObj,
 					BPFObjName: "parca-rbperf",
 				})
@@ -303,7 +306,7 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 
 				{
 					//////////////
-					rubyHeap, err := m.GetMap("heap")
+					rubyHeap, err := mRuby.GetMap("heap")
 					if err != nil {
 						panic(fmt.Errorf("get heap map: %w", err))
 					}
@@ -313,12 +316,10 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 						panic(fmt.Errorf("reuse map: %w", err))
 					}
 
-					// panic(rubyHeap.FileDescriptor() - heapNative.FileDescriptor())
-
 				}
 
 				{
-					RubystackCounts, err := m.GetMap("stack_counts")
+					RubystackCounts, err := mRuby.GetMap("stack_counts")
 					if err != nil {
 						panic(fmt.Errorf("get stack_counts map: %w", err))
 					}
@@ -334,49 +335,88 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 
 				}
 
-				lerr = m.BPFLoadObject()
+				lerr = mRuby.BPFLoadObject()
 				if lerr != nil {
 					fmt.Println(lerr)
 					panic("error loading rbperf")
 				}
 
-				rubyProg, err = m.GetProgram("unwind_ruby_stack")
+				rubyWalkerProg, err := mRuby.GetProgram("walk_ruby_stack")
 				if err != nil {
-					fmt.Println(rubyProg, err)
-					panic("error getting ruby program")
+					fmt.Println(rubyWalkerProg, err)
+					panic("error getting rubyWalkerProf program")
+				}
+				if rubyWalkerProg == nil {
+					panic("nil rubyWalkerProf")
 				}
 
-				if rubyProg == nil {
+				rubyPrograms, err := mRuby.GetMap("programs")
+				if err != nil {
+					panic(fmt.Errorf("get programs map: %w", err))
+				}
+				rubyWalkerFd := rubyWalkerProg.FileDescriptor()
+				if err = rubyPrograms.Update(unsafe.Pointer(&rubyUnwinderProgramFd), unsafe.Pointer(&rubyWalkerFd)); err != nil {
+					panic(fmt.Errorf("failure updating: %w", err))
+				}
+
+				rubyEntrypointProg, err = mRuby.GetProgram("unwind_ruby_stack")
+				if err != nil {
+					fmt.Println(rubyEntrypointProg, err)
+					panic("error getting ruby program")
+				}
+				if rubyEntrypointProg == nil {
 					panic("nil rubyProg")
 				}
+
+				//panic(rubyWalkerProf.FileDescriptor())
 
 				// Map stuff
 
 				// pid_to_rb_thread, ProcessData
 				// version_specific_offsets, RubyVersionOffsets
 
-				pidToRbData, err := m.GetMap("pid_to_rb_thread")
+				pidToRbData, err := mRuby.GetMap("pid_to_rb_thread")
 				if err != nil {
 					panic(fmt.Errorf("get heap map: %w", err))
 				}
 
 				unwindShardsValBuf := new(bytes.Buffer)
-				procData := rbperf.ProcessData{}
+				procData := rbperf.ProcessData{
+					93947553676464,
+					0,
+					[4]byte{0, 0, 0, 0},
+					0,
+				}
 				unwindShardsValBuf.Grow(int(unsafe.Sizeof(&procData)))
 				binary.Write(unwindShardsValBuf, binary.LittleEndian, &procData)
-				pidToRbDataKey := uint32(100)
+				pidToRbDataKey := uint32(336072)
 				err = pidToRbData.Update(unsafe.Pointer(&pidToRbDataKey), unsafe.Pointer(&unwindShardsValBuf.Bytes()[0]))
 				if err != nil {
 					panic("could not write to pidToRbData")
 				}
 
 				{
-					versions, err := m.GetMap("version_specific_offsets")
+					versions, err := mRuby.GetMap("version_specific_offsets")
 					if err != nil {
 						panic(fmt.Errorf("get heap map: %w", err))
 					}
 					offsetsBuf := new(bytes.Buffer)
-					offset := rbperf.RubyVersionOffsets{}
+					offset := rbperf.RubyVersionOffsets{
+						3,
+						0,
+						4,
+						0,
+						8,
+						56,
+						16,
+						16,
+						1,
+						136,
+						120,
+						0,
+						32,
+						520,
+					}
 					offsetsBuf.Grow(int(unsafe.Sizeof(&offset)))
 					binary.Write(offsetsBuf, binary.LittleEndian, &offset)
 					key := uint32(0)
@@ -387,16 +427,18 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 				}
 
 			}
-			rubyFd := rubyProg.FileDescriptor()
-			programs, err := m.GetMap(programsMapName)
+
+			entrypointPrograms, err := nativeModule.GetMap(programsMapName)
 			if err != nil {
 				panic(fmt.Errorf("get programs map: %w", err))
 			}
-			if err = programs.Update(unsafe.Pointer(&rubyProgramFd), unsafe.Pointer(&rubyFd)); err != nil {
+
+			rubyEntrypointFd := rubyEntrypointProg.FileDescriptor()
+			if err = entrypointPrograms.Update(unsafe.Pointer(&rubyEntrypointProgramFd), unsafe.Pointer(&rubyEntrypointFd)); err != nil {
 				panic(fmt.Errorf("failure updating: %w", err))
 			}
 
-			return m, bpfMaps, nil
+			return nativeModule, bpfMaps, nil
 		}
 
 		// There's not enough free memory for these many unwind shards, let's retry with half
