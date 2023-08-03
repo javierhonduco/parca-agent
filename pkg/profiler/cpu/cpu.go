@@ -49,6 +49,7 @@ import (
 	"github.com/parca-dev/parca-agent/pkg/pprof"
 	"github.com/parca-dev/parca-agent/pkg/profile"
 	"github.com/parca-dev/parca-agent/pkg/profiler"
+	"github.com/parca-dev/parca-agent/pkg/rbperf"
 	"github.com/parca-dev/parca-agent/pkg/rlimit"
 	"github.com/parca-dev/parca-agent/pkg/stack/unwind"
 )
@@ -328,10 +329,14 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 						panic(fmt.Errorf("get stack_counts map: %w", err))
 					}
 
+					fmt.Println("=>")
+					// time.Sleep(time.Minute * 1)
+					fmt.Println("<=")
 					err = RubystackCounts.MapReuseFd(stackCountNative.FileDescriptor())
 					if err != nil {
 						panic(fmt.Errorf("reuse map: %w", err))
 					}
+					// time.Sleep(time.Minute * 1)
 
 				}
 
@@ -350,6 +355,43 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 				if rubyProg == nil {
 					panic("nil rubyProg")
 				}
+
+				// Map stuff
+
+				// pid_to_rb_thread, ProcessData
+				// version_specific_offsets, RubyVersionOffsets
+
+				pidToRbData, err := m.GetMap("pid_to_rb_thread")
+				if err != nil {
+					panic(fmt.Errorf("get heap map: %w", err))
+				}
+
+				unwindShardsValBuf := new(bytes.Buffer)
+				procData := rbperf.ProcessData{}
+				unwindShardsValBuf.Grow(int(unsafe.Sizeof(&procData)))
+				binary.Write(unwindShardsValBuf, binary.LittleEndian, &procData)
+				pidToRbDataKey := uint32(100)
+				err = pidToRbData.Update(unsafe.Pointer(&pidToRbDataKey), unsafe.Pointer(&unwindShardsValBuf.Bytes()[0]))
+				if err != nil {
+					panic("could not write to pidToRbData")
+				}
+
+				{
+					versions, err := m.GetMap("version_specific_offsets")
+					if err != nil {
+						panic(fmt.Errorf("get heap map: %w", err))
+					}
+					offsetsBuf := new(bytes.Buffer)
+					offset := rbperf.RubyVersionOffsets{}
+					offsetsBuf.Grow(int(unsafe.Sizeof(&offset)))
+					binary.Write(offsetsBuf, binary.LittleEndian, &offset)
+					key := uint32(0)
+					err = versions.Update(unsafe.Pointer(&key), unsafe.Pointer(&offsetsBuf.Bytes()[0]))
+					if err != nil {
+						panic(err)
+					}
+				}
+
 			}
 			rubyFd := rubyProg.FileDescriptor()
 			programs, err := m.GetMap(programsMapName)

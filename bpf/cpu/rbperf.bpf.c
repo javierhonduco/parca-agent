@@ -370,16 +370,12 @@ int unwind_ruby_stack(struct bpf_perf_event_data *ctx) {
         return 0;
     }
 
-    if (pid == 663626 || pid == 663639 || pid == 663638) {
-        bpf_printk("maybe!? pid %d other %d", pid, (int)pid_tgid);
-    }
-
     ProcessData *process_data = bpf_map_lookup_elem(&pid_to_rb_thread, &pid);
 
     if (process_data != NULL && process_data->rb_frame_addr != 0) {
         // bpf_printk("doing it!? pid %d other %d", pid, (int)pid_tgid);
 
-        LOG("[debug] reading Ruby stack");
+        bpf_printk("[debug] reading Ruby stack");
 
         struct task_struct *task = (void *)bpf_get_current_task();
         if (task == NULL) {
@@ -480,6 +476,8 @@ int unwind_ruby_stack(struct bpf_perf_event_data *ctx) {
         // This will never be executed
 
         return 0;
+    } else {
+        bpf_printk("[error] not a ruby proc");
     }
     return 0;
 }
