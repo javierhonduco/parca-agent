@@ -609,6 +609,9 @@ static __always_inline void add_stack(struct bpf_perf_event_data *ctx, u64 pid_t
     return;
   }
 
+  // Tail-calls do not return.
+  request_process_mappings(ctx, user_pid);
+
   switch (proc_info->interpreter_type) {
     case INTERPRETER_TYPE_UNDEFINED:
       bpf_printk("[debug] not an interpreter");
@@ -622,9 +625,6 @@ static __always_inline void add_stack(struct bpf_perf_event_data *ctx, u64 pid_t
       bpf_printk("[warn] bad interpreter value: %d", proc_info->interpreter_type);
       break;
   }
-
-  request_process_mappings(ctx, user_pid);
-  return;
 }
 
 // The unwinding machinery lives here.
@@ -870,7 +870,6 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
       if (proc_info->is_jit_compiler) {
         LOG("[warn] mapping not added yet");
         request_refresh_process_info(ctx, user_pid);
-
         bump_unwind_error_jit();
         return 1;
       }
