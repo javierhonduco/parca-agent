@@ -4,7 +4,6 @@
 // This file contains shared structures, BPF maps, and other helpers
 // that every unwinder uses.
 
-#define MAX_STACK_DEPTH 127
 // Number of items in the stack counts aggregation map.
 #define MAX_STACK_COUNTS_ENTRIES 10240
 // A different stack produced the same hash.
@@ -18,11 +17,6 @@ typedef struct {
   int user_stack_id_dwarf_id;
   int interpreter_stack_id;
 } stack_count_key_t;
-
-typedef struct {
-  u64 len;
-  u64 addresses[MAX_STACK_DEPTH];
-} stack_trace_t;
 
 typedef struct {
   u64 ip;

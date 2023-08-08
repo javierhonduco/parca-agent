@@ -67,7 +67,7 @@ var (
 
 const (
 	stackDepth       = 127 // Always needs to be sync with MAX_STACK_DEPTH in BPF program.
-	tripleStackDepth = stackDepth * 3
+	doubleStackDepth = stackDepth * 2
 
 	programName              = "profile_cpu"
 	dwarfUnwinderProgramName = "walk_user_stacktrace_impl"
@@ -80,7 +80,7 @@ type Config struct {
 	MixedStackWalking bool
 }
 
-type combinedStack [tripleStackDepth]uint64
+type combinedStack [doubleStackDepth]uint64
 
 type CPU struct {
 	logger  log.Logger
@@ -966,7 +966,7 @@ func (p *CPU) obtainRawData(ctx context.Context) (profile.RawData, error) {
 		if key.InterpreterStackID != 0 {
 			fmt.Println("interp stack!!", key.InterpreterStackID)
 			// @nocommit handle errors
-			_ = p.bpfMaps.readInterpreterStack(key.InterpreterStackID, &stack)
+			_ = p.bpfMaps.readInterpreterStack(key.InterpreterStackID)
 		}
 
 		kernelErr := p.bpfMaps.readKernelStack(key.KernelStackID, &stack)

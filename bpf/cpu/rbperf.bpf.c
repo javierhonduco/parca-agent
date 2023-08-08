@@ -263,10 +263,10 @@ int walk_ruby_stack(struct bpf_perf_event_data *ctx) {
             read_frame(pc, body, &current_frame, version_offsets);
         }
 
-        long long int actual_index = state->stack.size;
-        if (actual_index >= 0 && actual_index < MAX_STACK) {
-            state->stack.frames[actual_index] = find_or_insert_frame(&current_frame);
-            state->stack.size += 1;
+        long long int actual_index = state->stack.frames.len;
+        if (actual_index >= 0 && actual_index < MAX_STACK_DEPTH) {
+            state->stack.frames.addresses[actual_index] = find_or_insert_frame(&current_frame);
+            state->stack.frames.len += 1;
         }
 
         cfp += control_frame_t_sizeof;
@@ -283,12 +283,12 @@ int walk_ruby_stack(struct bpf_perf_event_data *ctx) {
 
     state->stack.stack_status = cfp > state->base_stack ? STACK_COMPLETE : STACK_INCOMPLETE;
 
-    if (state->stack.size != state->stack.expected_size) {
-        LOG("[error] stack size %d, expected %d", state->stack.size, state->stack.expected_size);
+    if (state->stack.frames.len != state->stack.expected_size) {
+        LOG("[error] stack size %d, expected %d", state->stack.frames.len, state->stack.expected_size);
     }
 
     // Hash stack.
-    int ruby_stack_hash = MurmurHash2((u32 *)state->stack.frames, MAX_STACK * sizeof(u64) / sizeof(u32), 0);
+    int ruby_stack_hash = MurmurHash2((u32 *)state->stack.frames.addresses, MAX_STACK * sizeof(u64) / sizeof(u32), 0);
     bpf_printk("ruby stack hash: %d", ruby_stack_hash);
 
     unwind_state_t *unwind_state = bpf_map_lookup_elem(&heap, &zero);
@@ -418,7 +418,7 @@ int unwind_ruby_stack(struct bpf_perf_event_data *ctx) {
         } else {
             state->stack.syscall_id = 0;
         }
-        state->stack.size = 0;
+        state->stack.frames.len = 0;
         state->stack.expected_size = (base_stack - cfp) / control_frame_t_sizeof;
         bpf_get_current_comm(state->stack.comm, sizeof(state->stack.comm));
         state->stack.stack_status = STACK_COMPLETE;

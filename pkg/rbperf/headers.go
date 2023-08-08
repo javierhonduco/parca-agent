@@ -59,9 +59,9 @@ type s64 = int64  /* rbperf.h:21:15 */
 type u64 = uint64 /* rbperf.h:22:15 */
 
 type RubyFrame = struct {
-	lineno      u32
-	method_name [50]int8
-	path        [150]int8
+	Lineno      u32
+	Method_name [50]uint8
+	Path        [150]uint8
 } /* rbperf.h:89:3 */
 
 type RubyStack = struct {
