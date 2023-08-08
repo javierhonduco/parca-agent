@@ -5,6 +5,16 @@
 
 #include "basic_types.h"
 
+///
+#define MAX_STACK_DEPTH 127
+
+typedef struct {
+  u64 len;
+  u64 addresses[MAX_STACK_DEPTH];
+} stack_trace_t;
+
+///
+
 #define COMM_MAXLEN 25
 #define METHOD_MAXLEN 50
 #define PATH_MAXLEN 150
@@ -74,12 +84,13 @@ typedef struct {
 
 typedef struct {
     u64 timestamp;
-    u32 frames[MAX_STACK];
+    stack_trace_t frames;
+
     u32 pid;
     u32 cpu;
     // Only set when tracing syscalls.
     int syscall_id;
-    long long int size;
+    // long long int size;
     long long int expected_size;
     char comm[COMM_MAXLEN];
     enum ruby_stack_status stack_status;

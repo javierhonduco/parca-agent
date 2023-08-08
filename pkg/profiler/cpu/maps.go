@@ -610,9 +610,14 @@ func (m *bpfMaps) readUserStackWithDwarf(userStackID int32, stack *combinedStack
 }
 
 // readKernelStack reads the kernel stack trace from the stacktraces ebpf map into the given buffer.
-func (m *bpfMaps) readInterpreterStack(interpreterStackID int32, stack *combinedStack) error {
+func (m *bpfMaps) readInterpreterStack(interpreterStackID int32) error {
 	if interpreterStackID == 0 {
 		return errUnwindFailed
+	}
+
+	type dwarfStacktrace struct {
+		Len   uint64
+		Addrs [stackDepth]uint64
 	}
 
 	stackBytes, err := m.interpreterStackTraces.GetValue(unsafe.Pointer(&interpreterStackID))
@@ -620,11 +625,47 @@ func (m *bpfMaps) readInterpreterStack(interpreterStackID int32, stack *combined
 		return fmt.Errorf("read kernel stack trace, %w: %w", err, errMissing)
 	}
 
-	if err := binary.Read(bytes.NewBuffer(stackBytes), m.byteOrder, stack[stackDepth*2:]); err != nil {
-		return fmt.Errorf("read kernel stack bytes, %w: %w", err, errUnrecoverable)
+	var interpreterStack dwarfStacktrace
+	if err := binary.Read(bytes.NewBuffer(stackBytes), m.byteOrder, &interpreterStack); err != nil {
+		return fmt.Errorf("read user stack bytes, %w: %w", err, errUnrecoverable)
 	}
 
-	fmt.Println(stack[stackDepth*2:])
+	frameTable, err := m.rbperfModule.GetMap("frame_table")
+	if err != nil {
+		return fmt.Errorf("get frame table map: %w", err)
+	}
+
+	frames := make(map[uint32]string)
+
+	it := frameTable.Iterator()
+	for it.Next() {
+		keyBytes := it.Key()
+		frame := rbperf.RubyFrame{}
+		frameIndex := uint32(0)
+
+		if err := binary.Read(bytes.NewBuffer(keyBytes), m.byteOrder, &frame); err != nil {
+			return fmt.Errorf("read user stack bytes, %w: %w", err, errUnrecoverable)
+		}
+
+		valBytes, err := frameTable.GetValue(unsafe.Pointer(&keyBytes[0]))
+		if err != nil {
+			panic("error reading key bytes")
+		}
+
+		if err := binary.Read(bytes.NewBuffer(valBytes), m.byteOrder, &frameIndex); err != nil {
+			return fmt.Errorf("read user stack bytes, %w: %w", err, errUnrecoverable)
+		}
+
+		frames[frameIndex] = string(frame.Method_name[:])
+	}
+
+	fmt.Println("===== ruby stack")
+	for i, frameId := range interpreterStack.Addrs {
+		if i >= stackDepth || i >= int(interpreterStack.Len) {
+			break
+		}
+		fmt.Println(frames[uint32(frameId)])
+	}
 
 	return nil
 }
