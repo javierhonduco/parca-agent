@@ -976,6 +976,7 @@ static __always_inline bool set_initial_state(bpf_user_pt_regs_t *regs) {
   unwind_state->stack_key.tgid = 0;
   unwind_state->stack_key.user_stack_id = 0;
   unwind_state->stack_key.user_stack_id_dwarf_id = 0;
+  unwind_state->stack_key.interpreter_stack_id = 0;
 
   u64 ip = 0;
   u64 sp = 0;
