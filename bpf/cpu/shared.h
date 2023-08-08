@@ -15,7 +15,8 @@ typedef struct {
   int tgid;
   int user_stack_id;
   int kernel_stack_id;
-  int user_stack_id_dwarf;
+  int user_stack_id_dwarf_id;
+  int interpreter_stack_id;
 } stack_count_key_t;
 
 typedef struct {
@@ -31,6 +32,7 @@ typedef struct {
   stack_trace_t stack;
   bool unwinding_jit; // set to true during JITed unwinding; false unless mixed-mode unwinding is enabled
 
+  // interpreter type ?
   stack_count_key_t stack_key; // @nocommit: if first field, we get garbage?
 } unwind_state_t;
 

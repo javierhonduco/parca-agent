@@ -317,7 +317,7 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 						panic(fmt.Errorf("get heap map: %w", err))
 					}
 
-					err = rubyHeap.MapReuseFd(heapNative.FileDescriptor())
+					err = rubyHeap.ReuseFD(heapNative.FileDescriptor())
 					if err != nil {
 						panic(fmt.Errorf("reuse map: %w", err))
 					}
@@ -330,10 +330,7 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 						panic(fmt.Errorf("get stack_counts map: %w", err))
 					}
 
-					fmt.Println("=>")
-					// time.Sleep(time.Minute * 1)
-					fmt.Println("<=")
-					err = RubystackCounts.MapReuseFd(stackCountNative.FileDescriptor())
+					err = RubystackCounts.ReuseFD(stackCountNative.FileDescriptor())
 					if err != nil {
 						panic(fmt.Errorf("reuse map: %w", err))
 					}
@@ -388,14 +385,14 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 
 				unwindShardsValBuf := new(bytes.Buffer)
 				procData := rbperf.ProcessData{
-					93947553676464,
+					0x55a277620cb0, // 0x55a277224000
 					0,
 					[4]byte{0, 0, 0, 0},
 					0,
 				}
 				unwindShardsValBuf.Grow(int(unsafe.Sizeof(&procData)))
 				binary.Write(unwindShardsValBuf, binary.LittleEndian, &procData)
-				pidToRbDataKey := uint32(336072)
+				pidToRbDataKey := uint32(21133)
 				err = pidToRbData.Update(unsafe.Pointer(&pidToRbDataKey), unsafe.Pointer(&unwindShardsValBuf.Bytes()[0]))
 				if err != nil {
 					panic("could not write to pidToRbData")

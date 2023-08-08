@@ -12,6 +12,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
+#include "hash.h"
 #include "shared.h"
 
 /* struct {
@@ -286,6 +287,13 @@ int walk_ruby_stack(struct bpf_perf_event_data *ctx) {
         LOG("[error] stack size %d, expected %d", state->stack.size, state->stack.expected_size);
     }
 
+    int ruby_stack_hash = MurmurHash2((u32 *)state->stack.frames, MAX_STACK * sizeof(u64) / sizeof(u32), 0);
+    bpf_printk("ruby stack hash: %d", ruby_stack_hash);
+
+    unwind_state_t *unwind_state = bpf_map_lookup_elem(&heap, &zero);
+    if (unwind_state != NULL) {
+        unwind_state->stack_key.interpreter_stack_id = ruby_stack_hash;
+    }
     aggregate_stacks();
 /*     if (use_ringbuf) {
         bpf_ringbuf_output(&events, &state->stack, sizeof(RubyStack), 0);
@@ -333,7 +341,7 @@ int unwind_ruby_stack(struct bpf_perf_event_data *ctx) {
         // it to the actual start time. Otherwise, we check that the start_time
         // of the process matches what we expect. If it's not the case, bail out
         // early, to avoid profiling the wrong process.
-/*         if (enable_pid_race_detector) {
+        if (enable_pid_race_detector) {
             u64 process_start_time;
             bpf_core_read(&process_start_time, 8, &task->start_time);
 
@@ -348,7 +356,7 @@ int unwind_ruby_stack(struct bpf_perf_event_data *ctx) {
                 }
             }
         }
- */
+
         u64 ruby_current_thread_addr;
         u64 main_thread_addr;
         u64 ec_addr;

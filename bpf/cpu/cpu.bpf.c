@@ -21,9 +21,15 @@
 #define RUBY_UNWINDER_PROGRAM_ID 1
 
 // Number of frames to walk per tail call iteration.
+<<<<<<< HEAD
 #define MAX_STACK_DEPTH_PER_PROGRAM 11
 // Number of BPF tail calls that will be attempted.
 #define MAX_TAIL_CALLS 12
+=======
+#define MAX_STACK_DEPTH_PER_PROGRAM 10
+// Number of BPF tail calls that will be attempted.
+#define MAX_TAIL_CALLS 20
+>>>>>>> 1a29a86a (ruby stack hash)
 // Maximum number of frames.
 #define MAX_STACK_DEPTH 127
 _Static_assert(MAX_TAIL_CALLS *MAX_STACK_DEPTH_PER_PROGRAM >= MAX_STACK_DEPTH, "enough iterations to traverse the whole stack");
@@ -609,18 +615,13 @@ static __always_inline void add_stack(struct bpf_perf_event_data *ctx, u64 pid_t
 
   int user_pid = pid_tgid >> 32;
   int user_tgid = pid_tgid;
-<<<<<<< HEAD
-  stack_key.pid = user_pid;
-  stack_key.tid = user_tgid;
-=======
   stack_key->pid = user_pid;
   stack_key->tgid = user_tgid;
->>>>>>> 2e914c0f (share stack_counts map + other changes)
 
   if (method == STACK_WALKING_METHOD_DWARF) {
     int stack_hash = MurmurHash2((u32 *)unwind_state->stack.addresses, MAX_STACK_DEPTH * sizeof(u64) / sizeof(u32), 0);
     LOG("stack hash %d", stack_hash);
-    stack_key->user_stack_id_dwarf = stack_hash;
+    stack_key->user_stack_id_dwarf_id = stack_hash;
 
     // Insert stack.
     int err = bpf_map_update_elem(&dwarf_stack_traces, &stack_hash, &unwind_state->stack, BPF_ANY);
@@ -1047,7 +1048,7 @@ static __always_inline bool set_initial_state(bpf_user_pt_regs_t *regs) {
   unwind_state->stack_key.pid = 0;
   unwind_state->stack_key.tgid = 0;
   unwind_state->stack_key.user_stack_id = 0;
-  unwind_state->stack_key.user_stack_id_dwarf = 0;
+  unwind_state->stack_key.user_stack_id_dwarf_id = 0;
 
   u64 ip = 0;
   u64 sp = 0;
