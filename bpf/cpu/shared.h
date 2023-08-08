@@ -50,6 +50,14 @@ struct {
   __type(value, u64);
 } stack_counts SEC(".maps");
 
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, MAX_STACK_COUNTS_ENTRIES);
+  __type(key, int);
+  __type(value, stack_trace_t);
+} interpreter_stack_traces SEC(".maps"); // TODO think about this.
+
+
 static __always_inline void *bpf_map_lookup_or_try_init(void *map, const void *key, const void *init) {
   void *val;
   long err;

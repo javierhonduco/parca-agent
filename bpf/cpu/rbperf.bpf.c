@@ -287,6 +287,7 @@ int walk_ruby_stack(struct bpf_perf_event_data *ctx) {
         LOG("[error] stack size %d, expected %d", state->stack.size, state->stack.expected_size);
     }
 
+    // Hash stack.
     int ruby_stack_hash = MurmurHash2((u32 *)state->stack.frames, MAX_STACK * sizeof(u64) / sizeof(u32), 0);
     bpf_printk("ruby stack hash: %d", ruby_stack_hash);
 
@@ -294,6 +295,13 @@ int walk_ruby_stack(struct bpf_perf_event_data *ctx) {
     if (unwind_state != NULL) {
         unwind_state->stack_key.interpreter_stack_id = ruby_stack_hash;
     }
+
+    // Insert stack.
+    int err = bpf_map_update_elem(&interpreter_stack_traces, &ruby_stack_hash, &state->stack.frames, BPF_ANY);
+    if (err != 0) {
+      LOG("[error] bpf_map_update_elem with ret: %d", err);
+    }
+
     aggregate_stacks();
 /*     if (use_ringbuf) {
         bpf_ringbuf_output(&events, &state->stack, sizeof(RubyStack), 0);

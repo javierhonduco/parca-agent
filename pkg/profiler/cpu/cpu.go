@@ -67,7 +67,7 @@ var (
 
 const (
 	stackDepth       = 127 // Always needs to be sync with MAX_STACK_DEPTH in BPF program.
-	doubleStackDepth = stackDepth * 2
+	tripleStackDepth = stackDepth * 3
 
 	programName              = "profile_cpu"
 	dwarfUnwinderProgramName = "walk_user_stacktrace_impl"
@@ -80,7 +80,7 @@ type Config struct {
 	MixedStackWalking bool
 }
 
-type combinedStack [doubleStackDepth]uint64
+type combinedStack [tripleStackDepth]uint64
 
 type CPU struct {
 	logger  log.Logger
@@ -232,9 +232,26 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 	}
 
 	// rbperf
-	var (
-		rubyEntrypointProg *bpf.BPFProg
-	)
+	file, err := bpfObjects.Open(fmt.Sprintf("bpf/%s/rbperf.bpf.o", runtime.GOARCH))
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to open BPF object: %w", err)
+	}
+	// Note: no need to close this file, it's a virtual file from embed.FS, for
+	// which Close is a no-op.
+
+	rbperfBpfObj, err := io.ReadAll(file)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read BPF object: %w", err)
+	}
+
+	rbperfModule, err := bpf.NewModuleFromBufferArgs(bpf.NewModuleArgs{
+		BPFObjBuff: rbperfBpfObj,
+		BPFObjName: "parca-rbperf",
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("new bpf module: %w", err)
+	}
+	/////////////////
 
 	// Adaptive unwind shard count sizing.
 	for i := 0; i < maxLoadAttempts; i++ {
@@ -254,7 +271,7 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 		level.Debug(logger).Log("msg", "actual memory locked rlimit", "cur", rlimit.HumanizeRLimit(rLimit.Cur), "max", rlimit.HumanizeRLimit(rLimit.Max))
 
 		// Maps must be initialized before loading the BPF code.
-		bpfMaps, err := initializeMaps(logger, reg, nativeModule, binary.LittleEndian)
+		bpfMaps, err := initializeMaps(logger, reg, nativeModule, rbperfModule, binary.LittleEndian)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize eBPF maps: %w", err)
 		}
@@ -277,170 +294,47 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 
 		lerr = nativeModule.BPFLoadObject()
 		if lerr == nil {
-			heapNative, err := nativeModule.GetMap("heap")
-			if err != nil {
-				panic(fmt.Errorf("get heapNative map: %w", err))
+			// Must be called before loading the interpreter stack walkers.
+			bpfMaps.ReuseMaps()
+
+			lerr = rbperfModule.BPFLoadObject()
+			if lerr != nil {
+				fmt.Println(lerr)
+				panic("error loading rbperf")
 			}
 
-			stackCountNative, err := nativeModule.GetMap("stack_counts")
-			if err != nil {
-				panic(fmt.Errorf("get stack_counts map: %w", err))
+			bpfMaps.UpdateTailCallsMap()
+
+			// Map stuff
+
+			// pid_to_rb_thread, ProcessData
+			// version_specific_offsets, RubyVersionOffsets
+
+			procData := rbperf.ProcessData{
+				0x55a277620cb0, // 0x55a277224000
+				0,
+				[4]byte{0, 0, 0, 0},
+				0,
 			}
+			bpfMaps.SetRbperfProcessData(procData)
 
-			// HACK: add ruby unwinder program. Move this to a better location.
-			{
-
-				f, err := bpfObjects.Open(fmt.Sprintf("bpf/%s/rbperf.bpf.o", runtime.GOARCH))
-				if err != nil {
-					return nil, nil, fmt.Errorf("failed to open BPF object: %w", err)
-				}
-				// Note: no need to close this file, it's a virtual file from embed.FS, for
-				// which Close is a no-op.
-
-				bpfObj, err := io.ReadAll(f)
-				if err != nil {
-					return nil, nil, fmt.Errorf("failed to read BPF object: %w", err)
-				}
-
-				mRuby, err := bpf.NewModuleFromBufferArgs(bpf.NewModuleArgs{
-					BPFObjBuff: bpfObj,
-					BPFObjName: "parca-rbperf",
-				})
-				if err != nil {
-					return nil, nil, fmt.Errorf("new bpf module: %w", err)
-				}
-
-				{
-					//////////////
-					rubyHeap, err := mRuby.GetMap("heap")
-					if err != nil {
-						panic(fmt.Errorf("get heap map: %w", err))
-					}
-
-					err = rubyHeap.ReuseFD(heapNative.FileDescriptor())
-					if err != nil {
-						panic(fmt.Errorf("reuse map: %w", err))
-					}
-
-				}
-
-				{
-					RubystackCounts, err := mRuby.GetMap("stack_counts")
-					if err != nil {
-						panic(fmt.Errorf("get stack_counts map: %w", err))
-					}
-
-					err = RubystackCounts.ReuseFD(stackCountNative.FileDescriptor())
-					if err != nil {
-						panic(fmt.Errorf("reuse map: %w", err))
-					}
-					// time.Sleep(time.Minute * 1)
-
-				}
-
-				lerr = mRuby.BPFLoadObject()
-				if lerr != nil {
-					fmt.Println(lerr)
-					panic("error loading rbperf")
-				}
-
-				rubyWalkerProg, err := mRuby.GetProgram("walk_ruby_stack")
-				if err != nil {
-					fmt.Println(rubyWalkerProg, err)
-					panic("error getting rubyWalkerProf program")
-				}
-				if rubyWalkerProg == nil {
-					panic("nil rubyWalkerProf")
-				}
-
-				rubyPrograms, err := mRuby.GetMap("programs")
-				if err != nil {
-					panic(fmt.Errorf("get programs map: %w", err))
-				}
-				rubyWalkerFd := rubyWalkerProg.FileDescriptor()
-				if err = rubyPrograms.Update(unsafe.Pointer(&rubyUnwinderProgramFd), unsafe.Pointer(&rubyWalkerFd)); err != nil {
-					panic(fmt.Errorf("failure updating: %w", err))
-				}
-
-				rubyEntrypointProg, err = mRuby.GetProgram("unwind_ruby_stack")
-				if err != nil {
-					fmt.Println(rubyEntrypointProg, err)
-					panic("error getting ruby program")
-				}
-				if rubyEntrypointProg == nil {
-					panic("nil rubyProg")
-				}
-
-				//panic(rubyWalkerProf.FileDescriptor())
-
-				// Map stuff
-
-				// pid_to_rb_thread, ProcessData
-				// version_specific_offsets, RubyVersionOffsets
-
-				pidToRbData, err := mRuby.GetMap("pid_to_rb_thread")
-				if err != nil {
-					panic(fmt.Errorf("get heap map: %w", err))
-				}
-
-				unwindShardsValBuf := new(bytes.Buffer)
-				procData := rbperf.ProcessData{
-					0x55a277620cb0, // 0x55a277224000
-					0,
-					[4]byte{0, 0, 0, 0},
-					0,
-				}
-				unwindShardsValBuf.Grow(int(unsafe.Sizeof(&procData)))
-				binary.Write(unwindShardsValBuf, binary.LittleEndian, &procData)
-				pidToRbDataKey := uint32(21133)
-				err = pidToRbData.Update(unsafe.Pointer(&pidToRbDataKey), unsafe.Pointer(&unwindShardsValBuf.Bytes()[0]))
-				if err != nil {
-					panic("could not write to pidToRbData")
-				}
-
-				{
-					versions, err := mRuby.GetMap("version_specific_offsets")
-					if err != nil {
-						panic(fmt.Errorf("get heap map: %w", err))
-					}
-					offsetsBuf := new(bytes.Buffer)
-					offset := rbperf.RubyVersionOffsets{
-						3,
-						0,
-						4,
-						0,
-						8,
-						56,
-						16,
-						16,
-						1,
-						136,
-						120,
-						0,
-						32,
-						520,
-					}
-					offsetsBuf.Grow(int(unsafe.Sizeof(&offset)))
-					binary.Write(offsetsBuf, binary.LittleEndian, &offset)
-					key := uint32(0)
-					err = versions.Update(unsafe.Pointer(&key), unsafe.Pointer(&offsetsBuf.Bytes()[0]))
-					if err != nil {
-						panic(err)
-					}
-				}
-
+			offset := rbperf.RubyVersionOffsets{
+				3,
+				0,
+				4,
+				0,
+				8,
+				56,
+				16,
+				16,
+				1,
+				136,
+				120,
+				0,
+				32,
+				520,
 			}
-
-			entrypointPrograms, err := nativeModule.GetMap(programsMapName)
-			if err != nil {
-				panic(fmt.Errorf("get programs map: %w", err))
-			}
-
-			rubyEntrypointFd := rubyEntrypointProg.FileDescriptor()
-			if err = entrypointPrograms.Update(unsafe.Pointer(&rubyEntrypointProgramFd), unsafe.Pointer(&rubyEntrypointFd)); err != nil {
-				panic(fmt.Errorf("failure updating: %w", err))
-			}
-
+			bpfMaps.SetRbperfVersionOffsets(offset)
 			return nativeModule, bpfMaps, nil
 		}
 
@@ -983,11 +877,12 @@ type (
 	// https://dave.cheney.net/2015/10/09/padding-is-hard
 	// TODO(https://github.com/parca-dev/parca-agent/issues/207)
 	stackCountKey struct {
-		PID              int32
-		TID              int32
-		UserStackID      int32
-		KernelStackID    int32
-		UserStackIDDWARF int32
+		PID                int32
+		TGID               int32
+		UserStackID        int32
+		KernelStackID      int32
+		UserStackIDDWARF   int32
+		InterpreterStackID int32
 	}
 )
 
@@ -1066,6 +961,12 @@ func (p *CPU) obtainRawData(ctx context.Context) (profile.RawData, error) {
 			} else {
 				p.metrics.readMapAttempts.WithLabelValues(labelUser, labelKernelUnwind, labelSuccess).Inc()
 			}
+		}
+
+		if key.InterpreterStackID != 0 {
+			fmt.Println("interp stack!!", key.InterpreterStackID)
+			// @nocommit handle errors
+			_ = p.bpfMaps.readInterpreterStack(key.InterpreterStackID, &stack)
 		}
 
 		kernelErr := p.bpfMaps.readKernelStack(key.KernelStackID, &stack)
