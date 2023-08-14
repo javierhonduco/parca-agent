@@ -244,14 +244,14 @@ func fetchRubyInterpreterInfo(pid int, mappings Mappings) (*Interpreter, error) 
 			startAddr := uint64(mapping.StartAddr)
 			librubyPath = mapping.Pathname
 			librubyBaseAddress = &startAddr
+			break
 		}
-		break
 	}
 
 	// If we can't find either, this is most likely not a Ruby
 	// process.
 	if rubyBaseAddress == nil && librubyBaseAddress == nil {
-		return nil, fmt.Errorf("Does not look like a Ruby Process")
+		return nil, fmt.Errorf("does not look like a Ruby Process")
 	}
 
 	rubyExecutable := ""
@@ -268,12 +268,12 @@ func fetchRubyInterpreterInfo(pid int, mappings Mappings) (*Interpreter, error) 
 	// at once.
 	elfFile, err := elf.Open(rubyExecutable)
 	if err != nil {
-		return nil, fmt.Errorf("Error opening ELF: %w", err)
+		return nil, fmt.Errorf("error opening ELF: %w", err)
 	}
 
 	symbols, err := elfFile.Symbols()
 	if err != nil {
-		return nil, fmt.Errorf("Error reading ELF symbols: %w", err)
+		return nil, fmt.Errorf("error reading ELF symbols: %w", err)
 	}
 
 	rubyVersion := ""
@@ -283,28 +283,35 @@ func fetchRubyInterpreterInfo(pid int, mappings Mappings) (*Interpreter, error) 
 			address := symbol.Value
 			f, err := os.Open(rubyExecutable)
 			if err != nil {
-				return nil, fmt.Errorf("Error opening ruby executable: %w", err)
+				return nil, fmt.Errorf("error opening ruby executable: %w", err)
 			}
 
-			f.Seek(int64(address), io.SeekStart)
-			f.Read(rubyVersionBuf)
+			_, err = f.Seek(int64(address), io.SeekStart)
+			if err != nil {
+				return nil, err
+			}
+
+			_, err = f.Read(rubyVersionBuf)
+			if err != nil {
+				return nil, err
+			}
 
 			rubyVersion = string(rubyVersionBuf)
 		}
 	}
 
 	if rubyVersion == "" {
-		return nil, fmt.Errorf("Could not find Ruby version")
+		return nil, fmt.Errorf("could not find Ruby version")
 	}
 
 	splittedVersion := strings.Split(rubyVersion, ".")
 	major, err := strconv.Atoi(splittedVersion[0])
 	if err != nil {
-		return nil, fmt.Errorf("Could not parse version: %w", err)
+		return nil, fmt.Errorf("could not parse version: %w", err)
 	}
 	minor, err := strconv.Atoi(splittedVersion[1])
 	if err != nil {
-		return nil, fmt.Errorf("Could not parse version: %w", err)
+		return nil, fmt.Errorf("could not parse version: %w", err)
 	}
 
 	vmPointerSymbol := ""
@@ -330,7 +337,7 @@ func fetchRubyInterpreterInfo(pid int, mappings Mappings) (*Interpreter, error) 
 	if mainThreadAddress == 0 {
 		dynSymbols, err := elfFile.DynamicSymbols()
 		if err != nil {
-			return nil, fmt.Errorf("Error reading dynamic ELF symbols: %w", err)
+			return nil, fmt.Errorf("error reading dynamic ELF symbols: %w", err)
 		}
 		for _, symbol := range dynSymbols {
 			// TODO(javierhonduco): Same as above.
@@ -351,7 +358,7 @@ func fetchRubyInterpreterInfo(pid int, mappings Mappings) (*Interpreter, error) 
 	}
 
 	// @nocommit
-	fmt.Println("=== main Ruby thread", mainThreadAddress, "vmpointer", vmPointerSymbol, "for pid", pid, "rubyVersion", rubyVersion)
+	// fmt.Println("=== main Ruby thread", mainThreadAddress, "vmpointer", vmPointerSymbol, "for pid", pid, "rubyVersion", rubyVersion)
 
 	interp := Interpreter{
 		Ruby,
@@ -362,14 +369,15 @@ func fetchRubyInterpreterInfo(pid int, mappings Mappings) (*Interpreter, error) 
 	return &interp, nil
 }
 
+// fetchInterpreterInfo attempts to fetch interpreter information
+// for each supported interpreter. Once one is found, it will be
+// returned.
 func fetchInterpreterInfo(pid int, mappings Mappings) *Interpreter {
-	fmt.Println("about to fetch ruby info")
 	rubyInfo, err := fetchRubyInterpreterInfo(pid, mappings)
 	if err == nil {
 		return rubyInfo
 	}
 
-	// TODO pass the error
 	return nil
 }
 
@@ -449,7 +457,6 @@ func (im *InfoManager) fetch(ctx context.Context, pid int) (info Info, err error
 		Interpreter: fetchInterpreterInfo(pid, mappings),
 		Mappings:    mappings,
 	}
-	fmt.Println(".... interpreter = ", info.Interpreter)
 
 	im.cache.Add(pid, info)
 

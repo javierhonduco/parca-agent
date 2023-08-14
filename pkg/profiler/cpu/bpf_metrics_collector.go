@@ -56,7 +56,7 @@ func (c *bpfMetricsCollector) getBPFMetrics() []*bpfMetrics {
 			continue
 		}
 
-		bpfMaxEntry := float64(bpfMap.GetMaxEntries())
+		bpfMaxEntry := float64(bpfMap.MaxEntries())
 		bpfMapKeySize := float64(bpfMap.KeySize())
 		bpfMapValueSize := float64(bpfMap.ValueSize())
 		bpfMapFd := fmt.Sprint(bpfMap.FileDescriptor())

@@ -296,123 +296,152 @@ func initializeMaps(logger log.Logger, reg prometheus.Registerer, module *bpf.Mo
 	return maps, nil
 }
 
-func (m *bpfMaps) ReuseMaps() {
+func (m *bpfMaps) ReuseMaps() error {
 	// Fetch native maps.
 	heapNative, err := m.nativeModule.GetMap("heap")
 	if err != nil {
-		panic(fmt.Errorf("get heapNative map: %w", err))
+		return fmt.Errorf("get map (native) heap: %w", err)
 	}
 
 	stackCountNative, err := m.nativeModule.GetMap("stack_counts")
 	if err != nil {
-		panic(fmt.Errorf("get stack_counts map: %w", err))
+		return fmt.Errorf("get map (native) stack_counts: %w", err)
 	}
 
 	InterpStacksNative, err := m.nativeModule.GetMap("interpreter_stack_traces")
 	if err != nil {
-		panic(fmt.Errorf("get interpreter_stack_traces map: %w", err))
+		return fmt.Errorf("get map (native) interpreter_stack_traces: %w", err)
 	}
 
-	// Fetch ruby maps.
+	// Fetch Rbperf maps.
 	rubyHeap, err := m.rbperfModule.GetMap("heap")
 	if err != nil {
-		panic(fmt.Errorf("get heap map: %w", err))
+		return (fmt.Errorf("get map (rbperf) heap: %w", err))
 	}
 	rubystackCounts, err := m.rbperfModule.GetMap("stack_counts")
 	if err != nil {
-		panic(fmt.Errorf("get stack_counts map: %w", err))
+		return fmt.Errorf("get map (rbperf) stack_counts: %w", err)
 	}
 	interpStacks, err := m.rbperfModule.GetMap("interpreter_stack_traces")
 	if err != nil {
-		panic(fmt.Errorf("get stack_counts map: %w", err))
+		return fmt.Errorf("get map (rbperf) interpreter_stack_traces: %w", err)
 	}
 
-	// Reuses.
+	// Reuse maps across programs.
 	err = rubyHeap.ReuseFD(heapNative.FileDescriptor())
 	if err != nil {
-		panic(fmt.Errorf("reuse map: %w", err))
+		return fmt.Errorf("reuse map (rbperf) heap: %w", err)
 	}
 
 	err = rubystackCounts.ReuseFD(stackCountNative.FileDescriptor())
 	if err != nil {
-		panic(fmt.Errorf("reuse map: %w", err))
+		return fmt.Errorf("reuse map (rbperf) stack_counts: %w", err)
 	}
 
 	err = interpStacks.ReuseFD(InterpStacksNative.FileDescriptor())
 	if err != nil {
-		panic(fmt.Errorf("reuse map: %w", err))
+		return fmt.Errorf("reuse map (rbperf) interpreter_stack_traces: %w", err)
 	}
+
+	return nil
 }
 
-func (m *bpfMaps) setRbperfProcessData(pid int, procData rbperf.ProcessData) {
+func (m *bpfMaps) setRbperfProcessData(pid int, procData rbperf.ProcessData) error {
 	pidToRbData, err := m.rbperfModule.GetMap("pid_to_rb_thread")
 	if err != nil {
-		panic(fmt.Errorf("get heap map: %w", err))
+		return fmt.Errorf("get map pid_to_rb_thread: %w", err)
 	}
 
-	unwindShardsValBuf := new(bytes.Buffer)
+	buf := new(bytes.Buffer)
+	buf.Grow(int(unsafe.Sizeof(&procData)))
 
-	unwindShardsValBuf.Grow(int(unsafe.Sizeof(&procData)))
-	binary.Write(unwindShardsValBuf, binary.LittleEndian, &procData)
-	pidToRbDataKey := uint32(pid)
-	err = pidToRbData.Update(unsafe.Pointer(&pidToRbDataKey), unsafe.Pointer(&unwindShardsValBuf.Bytes()[0]))
+	err = binary.Write(buf, binary.LittleEndian, &procData)
 	if err != nil {
-		panic("could not write to pidToRbData")
+		return fmt.Errorf("write procData to buffer: %w", err)
 	}
+
+	pidToRbDataKey := uint32(pid)
+	err = pidToRbData.Update(unsafe.Pointer(&pidToRbDataKey), unsafe.Pointer(&buf.Bytes()[0]))
+	if err != nil {
+		return fmt.Errorf("update map pid_to_rb_thread: %w", err)
+	}
+	return nil
 }
 
-func (m *bpfMaps) SetRbperfVersionOffsets(versionOffsets rbperf.RubyVersionOffsets) {
+func (m *bpfMaps) setRbperfVersionOffsets(versionOffsets rbperf.RubyVersionOffsets) error {
 	versions, err := m.rbperfModule.GetMap("version_specific_offsets")
 	if err != nil {
-		panic(fmt.Errorf("get heap map: %w", err))
+		return fmt.Errorf("get map version_specific_offsets: %w", err)
 	}
-	offsetsBuf := new(bytes.Buffer)
-	offsetsBuf.Grow(int(unsafe.Sizeof(&versionOffsets)))
-	binary.Write(offsetsBuf, binary.LittleEndian, &versionOffsets)
-	key := uint32(0)
-	err = versions.Update(unsafe.Pointer(&key), unsafe.Pointer(&offsetsBuf.Bytes()[0]))
+
+	buf := new(bytes.Buffer)
+	buf.Grow(int(unsafe.Sizeof(&versionOffsets)))
+
+	err = binary.Write(buf, binary.LittleEndian, &versionOffsets)
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("write versionOffsets to buffer: %w", err)
 	}
+
+	key := uint32(0)
+	err = versions.Update(unsafe.Pointer(&key), unsafe.Pointer(&buf.Bytes()[0]))
+	if err != nil {
+		return fmt.Errorf("update map version_specific_offsets: %w", err)
+	}
+	return nil
 }
 
-func (m *bpfMaps) UpdateTailCallsMap() {
+// TODO: Add more versions.
+func (m *bpfMaps) SetInterpreterData() error {
+	offset := rbperf.RubyVersionOffsets{
+		3,
+		0,
+		4,
+		0,
+		8,
+		56,
+		16,
+		16,
+		1,
+		136,
+		120,
+		0,
+		32,
+		520,
+	}
+	return m.setRbperfVersionOffsets(offset)
+}
+
+func (m *bpfMaps) UpdateTailCallsMap() error {
 	rubyEntrypointProg, err := m.rbperfModule.GetProgram("unwind_ruby_stack")
 	if err != nil {
-		fmt.Println(rubyEntrypointProg, err)
-		panic("error getting ruby program")
-	}
-	if rubyEntrypointProg == nil {
-		panic("nil rubyProg")
+		return fmt.Errorf("get program unwind_ruby_stack: %w", err)
 	}
 
 	entrypointPrograms, err := m.nativeModule.GetMap(programsMapName)
 	if err != nil {
-		panic(fmt.Errorf("get programs map: %w", err))
+		return fmt.Errorf("get map (native) programs: %w", err)
 	}
 
 	rubyEntrypointFd := rubyEntrypointProg.FileDescriptor()
 	if err = entrypointPrograms.Update(unsafe.Pointer(&rubyEntrypointProgramFd), unsafe.Pointer(&rubyEntrypointFd)); err != nil {
-		panic(fmt.Errorf("failure updating: %w", err))
+		return fmt.Errorf("update (native) programs: %w", err)
 	}
 
 	rubyWalkerProg, err := m.rbperfModule.GetProgram("walk_ruby_stack")
 	if err != nil {
-		fmt.Println(rubyWalkerProg, err)
-		panic("error getting rubyWalkerProf program")
-	}
-	if rubyWalkerProg == nil {
-		panic("nil rubyWalkerProf")
+		return fmt.Errorf("get program walk_ruby_stack: %w", err)
 	}
 
 	rubyPrograms, err := m.rbperfModule.GetMap("programs")
 	if err != nil {
-		panic(fmt.Errorf("get programs map: %w", err))
+		return fmt.Errorf("get map (rbperf) programs: %w", err)
 	}
+
 	rubyWalkerFd := rubyWalkerProg.FileDescriptor()
 	if err = rubyPrograms.Update(unsafe.Pointer(&rubyUnwinderProgramFd), unsafe.Pointer(&rubyWalkerFd)); err != nil {
-		panic(fmt.Errorf("failure updating: %w", err))
+		return fmt.Errorf("update (rbperf) programs: %w", err)
 	}
+	return nil
 }
 
 // close closes all the resources associated with the maps.
@@ -430,8 +459,8 @@ func (m *bpfMaps) adjustMapSizes(debugEnabled bool, unwindTableShards uint32) er
 	}
 
 	// Adjust unwind_tables size.
-	sizeBefore := unwindTables.GetMaxEntries()
-	if err := unwindTables.Resize(unwindTableShards); err != nil {
+	sizeBefore := unwindTables.MaxEntries()
+	if err := unwindTables.SetMaxEntries(unwindTableShards); err != nil {
 		return fmt.Errorf("resize unwind tables map from %d to %d elements: %w", sizeBefore, unwindTableShards, err)
 	}
 
@@ -443,7 +472,7 @@ func (m *bpfMaps) adjustMapSizes(debugEnabled bool, unwindTableShards uint32) er
 		if err != nil {
 			return fmt.Errorf("get debug pids map: %w", err)
 		}
-		if err := debugPIDs.Resize(maxProcesses); err != nil {
+		if err := debugPIDs.SetMaxEntries(maxProcesses); err != nil {
 			return fmt.Errorf("resize debug pids map from default to %d elements: %w", maxProcesses, err)
 		}
 	}
@@ -521,7 +550,7 @@ func (m *bpfMaps) create() error {
 	return nil
 }
 
-func (m *bpfMaps) addInterpreter(pid int, interpreter process.Interpreter) {
+func (m *bpfMaps) addInterpreter(pid int, interpreter process.Interpreter) error {
 	switch interpreter.Name {
 	case process.Ruby:
 		procData := rbperf.ProcessData{
@@ -530,9 +559,9 @@ func (m *bpfMaps) addInterpreter(pid int, interpreter process.Interpreter) {
 			[4]byte{0, 0, 0, 0}, // padding.
 			0,                   // start_time (unused).
 		}
-		m.setRbperfProcessData(pid, procData)
+		return m.setRbperfProcessData(pid, procData)
 	default:
-		panic(fmt.Sprintln("Invalid interpreter name: %d", interpreter.Name))
+		return fmt.Errorf("invalid interpreter name: %d", interpreter.Name)
 	}
 }
 
