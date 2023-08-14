@@ -659,20 +659,19 @@ static __always_inline void add_stack(struct bpf_perf_event_data *ctx, u64 pid_t
   }
 
   // Tail-calls do not return.
-  bpf_printk("=== request_process_mappings");
   request_process_mappings(ctx, user_pid);
 
   switch (proc_info->interpreter_type) {
     case INTERPRETER_TYPE_UNDEFINED:
-      bpf_printk("[debug] not an interpreter");
+      LOG("[debug] not an interpreter");
       aggregate_stacks();
       break;
     case INTERPRETER_TYPE_RUBY:
-      bpf_printk("[debug] Ruby interpreter");
+      LOG("[debug] Ruby interpreter");
       bpf_tail_call(ctx, &programs, RUBY_UNWINDER_PROGRAM_ID);
       break;
     default:
-      bpf_printk("[warn] bad interpreter value: %d", proc_info->interpreter_type);
+      LOG("[warn] bad interpreter value: %d", proc_info->interpreter_type);
       break;
   }
 }
@@ -1118,8 +1117,6 @@ int profile_cpu(struct bpf_perf_event_data *ctx) {
 
   // 1. If we have unwind information for a process, use it.
   if (has_unwind_information(user_pid)) {
-    bpf_printk("=== has unwind info");
-
     chunk_info_t *chunk_info = NULL;
     enum find_unwind_table_return unwind_table_result = find_unwind_table(&chunk_info, user_pid, unwind_state->ip, NULL);
     if (chunk_info == NULL) {
@@ -1159,14 +1156,11 @@ int profile_cpu(struct bpf_perf_event_data *ctx) {
   // 2. We did not have unwind information, let's see if we can unwind with frame
   // pointers.
   if (has_fp(unwind_state->bp)) {
-    bpf_printk("=== has fp");
     add_stack(ctx, pid_tgid, STACK_WALKING_METHOD_FP, unwind_state);
     return 0;
   }
 
   // 3. Request unwind information.
-  bpf_printk("=== has none");
-
   request_unwind_information(ctx, user_pid);
   return 0;
 }
