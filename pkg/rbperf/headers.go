@@ -11,6 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// nolint: stylecheck, unused, misspell
 package rbperf
 
 const (
@@ -24,14 +25,16 @@ const (
 	RBPERF_EVENT_SYSCALL         = 2
 )
 
-type s8 = int8
-type u8 = uint8
-type s16 = int16
-type u16 = uint16
-type s32 = int32
-type u32 = uint32
-type s64 = int64
-type u64 = uint64
+type (
+	s8  = int8
+	u8  = uint8
+	s16 = int16
+	u16 = uint16
+	s32 = int32
+	u32 = uint32
+	s64 = int64
+	u64 = uint64
+)
 
 type RubyFrame struct {
 	Lineno      u32
