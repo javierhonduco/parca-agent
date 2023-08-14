@@ -201,6 +201,7 @@ type bpfMaps struct {
 	rubyVersionSpecificOffsets *bpf.BPFMap
 	frameTable                 *bpf.BPFMap
 	processInfo                *bpf.BPFMap
+	InterpreterFrames          map[uint32]string
 
 	unwindShards *bpf.BPFMap
 	unwindTables *bpf.BPFMap
@@ -546,6 +547,7 @@ func (m *bpfMaps) create() error {
 	m.pidToRubyThread = pidToRubyThread
 	m.rubyVersionSpecificOffsets = rubyVersionSpecificOffsets
 	m.processInfo = processInfo
+	m.InterpreterFrames = make(map[uint32]string)
 
 	return nil
 }
@@ -554,10 +556,10 @@ func (m *bpfMaps) addInterpreter(pid int, interpreter process.Interpreter) error
 	switch interpreter.Name {
 	case process.Ruby:
 		procData := rbperf.ProcessData{
-			interpreter.MainThreadAddress,
-			m.indexForRubyVersion(interpreter.Version),
-			[4]byte{0, 0, 0, 0}, // padding.
-			0,                   // start_time (unused).
+			Rb_frame_addr: interpreter.MainThreadAddress,
+			Rb_version:    m.indexForRubyVersion(interpreter.Version),
+			Padding_:      [4]byte{0, 0, 0, 0},
+			Start_time:    0, // Unused as of now.
 		}
 		return m.setRbperfProcessData(pid, procData)
 	default:
@@ -654,7 +656,10 @@ func (m *bpfMaps) readUserStackWithDwarf(userStackID int32, stack *combinedStack
 	return nil
 }
 
-func stringy(in []uint8) string {
+// cStringToGo converts a C string in a buffer to a Go string,
+// making sure we do not read past NUL, as this is a statically
+// sized buffer that might not be full.
+func cStringToGo(in []uint8) string {
 	var buffer bytes.Buffer
 	for _, datum := range in {
 		if datum == 0 {
@@ -665,12 +670,10 @@ func stringy(in []uint8) string {
 	return buffer.String()
 }
 
-// readKernelStack reads the kernel stack trace from the stacktraces ebpf map into the given buffer.
-func (m *bpfMaps) readInterpreterStack(interpreterStackID int32) ([]string, error) {
-	res := []string{}
-
+// readInterpreterStack returns the interpreter stack.
+func (m *bpfMaps) readInterpreterStack(interpreterStackID int32, stack []uint64) error {
 	if interpreterStackID == 0 {
-		return res, errUnwindFailed
+		return errUnwindFailed
 	}
 
 	type dwarfStacktrace struct {
@@ -680,20 +683,41 @@ func (m *bpfMaps) readInterpreterStack(interpreterStackID int32) ([]string, erro
 
 	stackBytes, err := m.interpreterStackTraces.GetValue(unsafe.Pointer(&interpreterStackID))
 	if err != nil {
-		return res, fmt.Errorf("read kernel stack trace, %w: %w", err, errMissing)
+		return fmt.Errorf("read interpreter stack trace, %w: %w", err, errMissing)
 	}
 
 	var interpreterStack dwarfStacktrace
 	if err := binary.Read(bytes.NewBuffer(stackBytes), m.byteOrder, &interpreterStack); err != nil {
-		return res, fmt.Errorf("read user stack bytes, %w: %w", err, errUnrecoverable)
+		return fmt.Errorf("read interpreter stack bytes, %w: %w", err, errUnrecoverable)
 	}
 
-	frameTable, err := m.rbperfModule.GetMap("frame_table")
+	if err = m.readAndLoadSymbolTable(); err != nil {
+		return fmt.Errorf("readAllInterpreterFrames: %w", err)
+	}
+
+	for i, frameID := range interpreterStack.Addrs {
+		if i >= stackDepth || i >= int(interpreterStack.Len) {
+			break
+		}
+		stack[i] = frameID
+	}
+
+	return nil
+}
+
+// readAndLoadSymbolTable retrieves the whole symbol table in full so we
+// can construct a fast frameId -> Frame lookup table.
+
+// PERF: This code presents (at least) presents two possible performance
+// opportunities that we should measure.
+//
+// - Preallocating the lookup table.
+// - Batch the BPF map calls to read and update them.
+func (m *bpfMaps) readAndLoadSymbolTable() error {
+	frameTable, err := m.rbperfModule.GetMap("frame_table") // @nocommit: add these to a global place
 	if err != nil {
-		return res, fmt.Errorf("get frame table map: %w", err)
+		return fmt.Errorf("get frame table map: %w", err)
 	}
-
-	frames := make(map[uint32]string)
 
 	it := frameTable.Iterator()
 	for it.Next() {
@@ -702,30 +726,22 @@ func (m *bpfMaps) readInterpreterStack(interpreterStackID int32) ([]string, erro
 		frameIndex := uint32(0)
 
 		if err := binary.Read(bytes.NewBuffer(keyBytes), m.byteOrder, &frame); err != nil {
-			return res, fmt.Errorf("read user stack bytes, %w: %w", err, errUnrecoverable)
+			return fmt.Errorf("read interpreter stack bytes, %w: %w", err, errUnrecoverable)
 		}
 
 		valBytes, err := frameTable.GetValue(unsafe.Pointer(&keyBytes[0]))
 		if err != nil {
-			return res, fmt.Errorf("read val bytes, %w: %w", err, errUnrecoverable)
+			return fmt.Errorf("read interpreter val bytes, %w: %w", err, errUnrecoverable)
 		}
 
 		if err := binary.Read(bytes.NewBuffer(valBytes), m.byteOrder, &frameIndex); err != nil {
-			return res, fmt.Errorf("read user stack bytes, %w: %w", err, errUnrecoverable)
+			return fmt.Errorf("read interpreter frame bytes, %w: %w", err, errUnrecoverable)
 		}
 
-		frames[frameIndex] = stringy(frame.Method_name[:])
+		m.InterpreterFrames[frameIndex] = cStringToGo(frame.Method_name[:])
 	}
 
-	for i, frameId := range interpreterStack.Addrs {
-		if i >= stackDepth || i >= int(interpreterStack.Len) {
-			break
-		}
-		res = append(res, frames[uint32(frameId)])
-		fmt.Println(frames[uint32(frameId)])
-	}
-
-	return res, nil
+	return nil
 }
 
 // readKernelStack reads the kernel stack trace from the stacktraces ebpf map into the given buffer.

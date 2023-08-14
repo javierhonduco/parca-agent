@@ -81,17 +81,18 @@ type Converter struct {
 	cachedJitdump    map[string]*perf.Map
 	cachedJitdumpErr map[string]error
 
-	functionIndex        map[string]*pprofprofile.Function
-	addrLocationIndex    map[uint64]*pprofprofile.Location
-	perfmapLocationIndex map[string]*pprofprofile.Location
-	jitdumpLocationIndex map[string]*pprofprofile.Location
-	kernelLocationIndex  map[string]*pprofprofile.Location
-	vdsoLocationIndex    map[string]*pprofprofile.Location
+	functionIndex            map[string]*pprofprofile.Function
+	addrLocationIndex        map[uint64]*pprofprofile.Location
+	perfmapLocationIndex     map[string]*pprofprofile.Location
+	jitdumpLocationIndex     map[string]*pprofprofile.Location
+	kernelLocationIndex      map[string]*pprofprofile.Location
+	interpreterLocationIndex map[string]*pprofprofile.Location
+	vdsoLocationIndex        map[string]*pprofprofile.Location
 
-	pfs           procfs.FS
-	pid           int
-	mappings      []*process.Mapping
-	kernelMapping *pprofprofile.Mapping
+	pid                int
+	mappings           []*process.Mapping
+	kernelMapping      *pprofprofile.Mapping
+	interpreterMapping *pprofprofile.Mapping
 
 	threadNameCache map[int]string
 
@@ -112,6 +113,12 @@ func (m *Manager) NewConverter(
 	}
 	pprofMappings = append(pprofMappings, kernelMapping)
 
+	interpreterMapping := &pprofprofile.Mapping{
+		ID:   uint64(len(pprofMappings)) + 1, // +1 because pprof uses 1-indexing to be able to differentiate from 0 (unset).
+		File: "[interpreter]",                // TODO: add right interpreter?
+	}
+	pprofMappings = append(pprofMappings, interpreterMapping)
+
 	return &Converter{
 		m:      m,
 		logger: log.With(m.logger, "pid", pid),
@@ -119,17 +126,25 @@ func (m *Manager) NewConverter(
 		cachedJitdump:    map[string]*perf.Map{},
 		cachedJitdumpErr: map[string]error{},
 
-		functionIndex:        map[string]*pprofprofile.Function{},
-		addrLocationIndex:    map[uint64]*pprofprofile.Location{},
-		perfmapLocationIndex: map[string]*pprofprofile.Location{},
-		jitdumpLocationIndex: map[string]*pprofprofile.Location{},
-		kernelLocationIndex:  map[string]*pprofprofile.Location{},
-		vdsoLocationIndex:    map[string]*pprofprofile.Location{},
+		functionIndex:            map[string]*pprofprofile.Function{},
+		addrLocationIndex:        map[uint64]*pprofprofile.Location{},
+		perfmapLocationIndex:     map[string]*pprofprofile.Location{},
+		jitdumpLocationIndex:     map[string]*pprofprofile.Location{},
+		kernelLocationIndex:      map[string]*pprofprofile.Location{},
+		interpreterLocationIndex: map[string]*pprofprofile.Location{},
+		vdsoLocationIndex:        map[string]*pprofprofile.Location{},
 
+<<<<<<< HEAD
 		pfs:           pfs,
 		pid:           pid,
 		mappings:      mappings,
 		kernelMapping: kernelMapping,
+=======
+		pid:                pid,
+		mappings:           mappings,
+		kernelMapping:      kernelMapping,
+		interpreterMapping: interpreterMapping,
+>>>>>>> f513f090 (baby profile generation)
 
 		threadNameCache: map[int]string{},
 
@@ -158,7 +173,7 @@ const (
 
 // Convert converts a profile to a pprof profile. It is intended to only be
 // used once.
-func (c *Converter) Convert(ctx context.Context, rawData []profile.RawSample) (*pprofprofile.Profile, error) {
+func (c *Converter) Convert(ctx context.Context, rawData []profile.RawSample, interpreterFrames map[uint32]string) (*pprofprofile.Profile, error) {
 	kernelAddresses := map[uint64]struct{}{}
 	for _, sample := range rawData {
 		for _, addr := range sample.KernelStack {
@@ -182,6 +197,34 @@ func (c *Converter) Convert(ctx context.Context, rawData []profile.RawSample) (*
 			Value:    []int64{int64(sample.Value)},
 			Location: make([]*pprofprofile.Location, 0, len(sample.UserStack)+len(sample.KernelStack)),
 			Label:    make(map[string][]string),
+		}
+
+		for _, frameID := range sample.InterpreterStack {
+			interpreterSymbol := interpreterFrames[uint32(frameID)]
+
+			////////////
+			/* 		kernelSymbol, ok := kernelSymbols[addr]
+			if !ok {
+				kernelSymbol = "not found"
+			}
+			*/
+			/* 			if l, ok := c.interpreterLocationIndex[kernelSymbol]; ok {
+				return l
+			} */
+
+			l := &pprofprofile.Location{
+				ID:      uint64(len(c.result.Location)) + 1,
+				Mapping: c.interpreterMapping,
+				Line: []pprofprofile.Line{{
+					Function: c.addFunction(interpreterSymbol),
+				}},
+			}
+
+			c.interpreterLocationIndex[interpreterSymbol] = l
+			c.result.Location = append(c.result.Location, l)
+
+			////////////////
+			pprofSample.Location = append(pprofSample.Location, l)
 		}
 
 		for _, addr := range sample.KernelStack {

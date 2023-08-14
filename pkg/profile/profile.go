@@ -23,10 +23,10 @@ type ProcessRawData struct {
 }
 
 type RawSample struct {
-	TID         PID
-	UserStack   []uint64
-	KernelStack []uint64
-	Value       uint64
+	UserStack        []uint64
+	KernelStack      []uint64
+	InterpreterStack []uint64
+	Value            uint64
 }
 
 type RawData []ProcessRawData
