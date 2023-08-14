@@ -966,7 +966,7 @@ func (p *CPU) obtainRawData(ctx context.Context) (profile.RawData, error) {
 		if key.InterpreterStackID != 0 {
 			fmt.Println("interp stack!!", key.InterpreterStackID)
 			// @nocommit handle errors
-			_ = p.bpfMaps.readInterpreterStack(key.InterpreterStackID)
+			_, _ = p.bpfMaps.readInterpreterStack(key.InterpreterStackID)
 		}
 
 		kernelErr := p.bpfMaps.readKernelStack(key.KernelStackID, &stack)
