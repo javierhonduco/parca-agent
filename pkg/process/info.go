@@ -347,6 +347,7 @@ func fetchRubyInterpreterInfo(pid int, mappings Mappings) (*Interpreter, error) 
 }
 
 func fetchInterpreterInfo(pid int, mappings Mappings) *Interpreter {
+	fmt.Println("about to fetch ruby info")
 	rubyInfo, err := fetchRubyInterpreterInfo(pid, mappings)
 	if err == nil {
 		return rubyInfo
