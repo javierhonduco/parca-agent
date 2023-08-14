@@ -254,7 +254,7 @@ func fetchRubyInterpreterInfo(pid int, mappings Mappings) (*Interpreter, error) 
 		return nil, fmt.Errorf("does not look like a Ruby Process")
 	}
 
-	rubyExecutable := ""
+	var rubyExecutable string
 	if librubyBaseAddress == nil {
 		rubyExecutable = path.Join("/proc/", fmt.Sprintf("%d", pid), "/exe")
 	} else {
