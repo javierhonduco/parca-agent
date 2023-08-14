@@ -64,7 +64,7 @@ var (
 
 const (
 	stackDepth       = 127 // Always needs to be sync with MAX_STACK_DEPTH in BPF program.
-	doubleStackDepth = stackDepth * 2
+	tripleStackDepth = stackDepth * 3
 
 	programName              = "profile_cpu"
 	dwarfUnwinderProgramName = "walk_user_stacktrace_impl"
@@ -77,7 +77,7 @@ type Config struct {
 	MixedStackWalking bool
 }
 
-type combinedStack [doubleStackDepth]uint64
+type combinedStack [tripleStackDepth]uint64
 
 type CPU struct {
 	logger  log.Logger
@@ -244,7 +244,6 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 	if err != nil {
 		return nil, nil, fmt.Errorf("new bpf module: %w", err)
 	}
-	/////////////////
 
 	// Adaptive unwind shard count sizing.
 	for i := 0; i < maxLoadAttempts; i++ {
@@ -695,7 +694,7 @@ func (p *CPU) Run(ctx context.Context) error {
 				pi.Mappings.ExecutableSections(),
 				p.LastProfileStartedAt(),
 				samplingPeriod,
-			).Convert(ctx, perProcessRawData.RawSamples)
+			).Convert(ctx, perProcessRawData.RawSamples, p.bpfMaps.InterpreterFrames)
 			if err != nil {
 				level.Warn(p.logger).Log("msg", "failed to convert profile to pprof", "pid", pid, "err", err)
 				processLastErrors[pid] = err
@@ -863,6 +862,7 @@ func (p *CPU) obtainRawData(ctx context.Context) (profile.RawData, error) {
 		// Twice the stack depth because we have a user and a potential Kernel stack.
 		// Read order matters, since we read from the key buffer.
 		stack := combinedStack{}
+		interpreterStack := stack[stackDepth*2:]
 
 		var userErr error
 		if key.walkedWithDwarf() {
@@ -904,7 +904,11 @@ func (p *CPU) obtainRawData(ctx context.Context) (profile.RawData, error) {
 		}
 
 		if key.InterpreterStackID != 0 {
-			_, _ = p.bpfMaps.readInterpreterStack(key.InterpreterStackID)
+			// TODO: Improve error handling.
+			interpErr := p.bpfMaps.readInterpreterStack(key.InterpreterStackID, interpreterStack)
+			if interpErr != nil {
+				level.Debug(p.logger).Log("msg", "failed to read interpreter stacks", "err", interpErr)
+			}
 		}
 
 		kernelErr := p.bpfMaps.readKernelStack(key.KernelStackID, &stack)
@@ -964,7 +968,7 @@ func (p *CPU) obtainRawData(ctx context.Context) (profile.RawData, error) {
 }
 
 // preprocessRawData takes the raw data from the BPF maps and converts it into
-// a profile.RawData, which already splits the stacks into user and kernel
+// a profile.RawData, which already splits the stacks into user, kernel and interpreter
 // stacks. Since the input data is a map of maps, we can assume that they're
 // already unique and there are no duplicates, which is why at this point we
 // can just transform them into plain slices and structs.
@@ -979,31 +983,44 @@ func preprocessRawData(rawData map[int32]map[combinedStack]uint64) profile.RawDa
 		for stack, count := range perProcessRawData {
 			kernelStackDepth := 0
 			userStackDepth := 0
+			interpreterStackDepth := 0
 
-			// We count the number of kernel and user frames in the stack to be
-			// able to preallocate. If an address in the stack is 0 then the
-			// stack ended.
+			// We count the number of frames in the stack to be able to preallocate.
+			// If an address in the stack is 0 then the stack ended.
 			for _, addr := range stack[:stackDepth] {
-				if addr != 0 {
-					userStackDepth++
+				if addr == 0 {
+					break
 				}
+				userStackDepth++
 			}
-			for _, addr := range stack[stackDepth:] {
-				if addr != 0 {
-					kernelStackDepth++
+			for _, addr := range stack[stackDepth : stackDepth*2] {
+				if addr == 0 {
+					break
 				}
+				kernelStackDepth++
+			}
+
+			for i, addr := range stack[stackDepth*2:] {
+				// The first frame is encoded as a zero.
+				if i != 0 && addr == 0 {
+					break
+				}
+				interpreterStackDepth++
 			}
 
 			userStack := make([]uint64, userStackDepth)
 			kernelStack := make([]uint64, kernelStackDepth)
+			interpreterStack := make([]uint64, interpreterStackDepth)
 
 			copy(userStack, stack[:userStackDepth])
 			copy(kernelStack, stack[stackDepth:stackDepth+kernelStackDepth])
+			copy(interpreterStack, stack[stackDepth*2:stackDepth*2+interpreterStackDepth])
 
 			p.RawSamples = append(p.RawSamples, profile.RawSample{
-				UserStack:   userStack,
-				KernelStack: kernelStack,
-				Value:       count,
+				UserStack:        userStack,
+				KernelStack:      kernelStack,
+				InterpreterStack: interpreterStack,
+				Value:            count,
 			})
 		}
 
