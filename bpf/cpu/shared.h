@@ -9,6 +9,15 @@
 // A different stack produced the same hash.
 #define STACK_COLLISION(err) (err == -EEXIST)
 
+//////////////
+#define MAX_STACK_DEPTH 127
+
+typedef struct {
+  u64 len;
+  u64 addresses[MAX_STACK_DEPTH];
+} stack_trace_t;
+/////////////////
+
 typedef struct {
   int pid;
   int tgid;

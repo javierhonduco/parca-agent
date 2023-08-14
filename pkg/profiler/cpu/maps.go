@@ -344,7 +344,7 @@ func (m *bpfMaps) ReuseMaps() {
 	}
 }
 
-func (m *bpfMaps) SetRbperfProcessData(procData rbperf.ProcessData) {
+func (m *bpfMaps) SetRbperfProcessData(pid int, procData rbperf.ProcessData) {
 	pidToRbData, err := m.rbperfModule.GetMap("pid_to_rb_thread")
 	if err != nil {
 		panic(fmt.Errorf("get heap map: %w", err))
@@ -354,7 +354,7 @@ func (m *bpfMaps) SetRbperfProcessData(procData rbperf.ProcessData) {
 
 	unwindShardsValBuf.Grow(int(unsafe.Sizeof(&procData)))
 	binary.Write(unwindShardsValBuf, binary.LittleEndian, &procData)
-	pidToRbDataKey := uint32(21133)
+	pidToRbDataKey := uint32(pid)
 	err = pidToRbData.Update(unsafe.Pointer(&pidToRbDataKey), unsafe.Pointer(&unwindShardsValBuf.Bytes()[0]))
 	if err != nil {
 		panic("could not write to pidToRbData")
@@ -525,8 +525,9 @@ func (m *bpfMaps) addInterpreter(interpreter process.Interpreter) {
 	// @nocommit
 	fmt.Println("== adding interpreter", interpreter.Name)
 
-	switch {
-	case interpreter.Name == process.Ruby:
+	switch interpreter.Name {
+	case process.Ruby:
+		fmt.Println("!! TBD add ruby", interpreter.Name)
 	default:
 		// @nocommit
 		fmt.Println("!! invalid interpreter", interpreter.Name)

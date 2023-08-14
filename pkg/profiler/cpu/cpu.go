@@ -311,12 +311,12 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 			// version_specific_offsets, RubyVersionOffsets
 
 			procData := rbperf.ProcessData{
-				0x55a277620cb0, // 0x55a277224000
+				0x564c0d2b4cb0, // ruby main thread address: 0x564c0d2b4cb0
 				0,
 				[4]byte{0, 0, 0, 0},
 				0,
 			}
-			bpfMaps.SetRbperfProcessData(procData)
+			bpfMaps.SetRbperfProcessData(6478, procData)
 
 			offset := rbperf.RubyVersionOffsets{
 				3,

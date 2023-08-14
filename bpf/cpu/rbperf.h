@@ -11,7 +11,7 @@
 typedef struct {
   u64 len;
   u64 addresses[MAX_STACK_DEPTH];
-} stack_trace_t;
+} stack_trace_copy_t;
 
 ///
 
@@ -84,7 +84,7 @@ typedef struct {
 
 typedef struct {
     u64 timestamp;
-    stack_trace_t frames;
+    stack_trace_copy_t frames;
 
     u32 pid;
     u32 cpu;
