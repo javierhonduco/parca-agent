@@ -47,7 +47,6 @@ import (
 	"github.com/parca-dev/parca-agent/pkg/pprof"
 	"github.com/parca-dev/parca-agent/pkg/profile"
 	"github.com/parca-dev/parca-agent/pkg/profiler"
-	"github.com/parca-dev/parca-agent/pkg/rbperf"
 	"github.com/parca-dev/parca-agent/pkg/rlimit"
 	"github.com/parca-dev/parca-agent/pkg/stack/unwind"
 )
@@ -289,38 +288,26 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 		lerr = nativeModule.BPFLoadObject()
 		if lerr == nil {
 			// Must be called before loading the interpreter stack walkers.
-			bpfMaps.ReuseMaps()
-
-			lerr = rbperfModule.BPFLoadObject()
-			if lerr != nil {
-				fmt.Println(lerr)
-				panic("error loading rbperf")
+			err := bpfMaps.ReuseMaps()
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to reuse maps: %w", err)
 			}
 
-			bpfMaps.UpdateTailCallsMap()
-
-			// Map stuff
-
-			// pid_to_rb_thread, ProcessData
-			// version_specific_offsets, RubyVersionOffsets
-
-			offset := rbperf.RubyVersionOffsets{
-				3,
-				0,
-				4,
-				0,
-				8,
-				56,
-				16,
-				16,
-				1,
-				136,
-				120,
-				0,
-				32,
-				520,
+			err = rbperfModule.BPFLoadObject()
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to load rbperf: %w", err)
 			}
-			bpfMaps.SetRbperfVersionOffsets(offset)
+
+			err = bpfMaps.UpdateTailCallsMap()
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to update programs map: %w", err)
+			}
+
+			err = bpfMaps.SetInterpreterData()
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to set interpreter data: %w", err)
+			}
+
 			return nativeModule, bpfMaps, nil
 		}
 
@@ -381,7 +368,11 @@ func (p *CPU) prefetchProcessInfo(ctx context.Context, pid int) {
 
 	// TODO: This should only be called once.
 	if procInfo.Interpreter != nil {
-		p.bpfMaps.addInterpreter(pid, *procInfo.Interpreter)
+		err := p.bpfMaps.addInterpreter(pid, *procInfo.Interpreter)
+		if err != nil {
+			// Must never fail.
+			panic(err)
+		}
 	}
 }
 
@@ -913,8 +904,6 @@ func (p *CPU) obtainRawData(ctx context.Context) (profile.RawData, error) {
 		}
 
 		if key.InterpreterStackID != 0 {
-			fmt.Println("interp stack!!", key.InterpreterStackID)
-			// @nocommit handle errors
 			_, _ = p.bpfMaps.readInterpreterStack(key.InterpreterStackID)
 		}
 
