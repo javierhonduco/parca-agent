@@ -304,14 +304,6 @@ func loadBpfProgram(logger log.Logger, reg prometheus.Registerer, mixedUnwinding
 			// pid_to_rb_thread, ProcessData
 			// version_specific_offsets, RubyVersionOffsets
 
-			procData := rbperf.ProcessData{
-				0x564c0d2b4cb0, // ruby main thread address: 0x564c0d2b4cb0
-				0,
-				[4]byte{0, 0, 0, 0},
-				0,
-			}
-			bpfMaps.SetRbperfProcessData(6478, procData)
-
 			offset := rbperf.RubyVersionOffsets{
 				3,
 				0,
@@ -387,9 +379,9 @@ func (p *CPU) prefetchProcessInfo(ctx context.Context, pid int) {
 		level.Debug(p.logger).Log("msg", "failed to prefetch process info", "pid", pid, "err", err)
 	}
 
-	// This should only be called once.
+	// TODO: This should only be called once.
 	if procInfo.Interpreter != nil {
-		p.bpfMaps.addInterpreter(*procInfo.Interpreter)
+		p.bpfMaps.addInterpreter(pid, *procInfo.Interpreter)
 	}
 }
 

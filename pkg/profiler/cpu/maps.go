@@ -336,7 +336,7 @@ func (m *bpfMaps) ReuseMaps() {
 	}
 }
 
-func (m *bpfMaps) SetRbperfProcessData(pid int, procData rbperf.ProcessData) {
+func (m *bpfMaps) setRbperfProcessData(pid int, procData rbperf.ProcessData) {
 	pidToRbData, err := m.rbperfModule.GetMap("pid_to_rb_thread")
 	if err != nil {
 		panic(fmt.Errorf("get heap map: %w", err))
@@ -513,17 +513,24 @@ func (m *bpfMaps) create() error {
 	return nil
 }
 
-func (m *bpfMaps) addInterpreter(interpreter process.Interpreter) {
-	// @nocommit
-	fmt.Println("== adding interpreter", interpreter.Name)
-
+func (m *bpfMaps) addInterpreter(pid int, interpreter process.Interpreter) {
 	switch interpreter.Name {
 	case process.Ruby:
-		fmt.Println("!! TBD add ruby", interpreter.Name)
+		procData := rbperf.ProcessData{
+			interpreter.MainThreadAddress,
+			m.indexForRubyVersion(interpreter.Version),
+			[4]byte{0, 0, 0, 0}, // padding.
+			0,                   // start_time (unused).
+		}
+		m.setRbperfProcessData(pid, procData)
 	default:
-		// @nocommit
-		fmt.Println("!! invalid interpreter", interpreter.Name)
+		panic(fmt.Sprintln("Invalid interpreter name: %d", interpreter.Name))
 	}
+}
+
+// @nocommit: change
+func (m *bpfMaps) indexForRubyVersion(version string) uint32 {
+	return 0
 }
 
 func (m *bpfMaps) setDebugPIDs(pids []int) error {

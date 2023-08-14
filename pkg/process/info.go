@@ -18,6 +18,7 @@ import (
 	"debug/elf"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -217,10 +218,10 @@ type Info struct {
 	Mappings    Mappings
 }
 
-// fetchRubyInterpreterInfo receives a process' pid and mappings and figures out whether
-// it might be a Ruby interpreter. In that case, it returns an interpreter structure with
-// the data that's needed by rbperf (https://github.com/javierhonduco/rbperf) to walk Ruby
-// stacks.
+// fetchRubyInterpreterInfo receives a process pid and memory mappings and
+// figures out whether it might be a Ruby interpreter. In that case, it
+// returns an `Interpreter` structure with the data that is needed by rbperf
+// (https://github.com/javierhonduco/rbperf) to walk Ruby stacks.
 func fetchRubyInterpreterInfo(pid int, mappings Mappings) (*Interpreter, error) {
 	var (
 		rubyBaseAddress    *uint64
@@ -228,20 +229,27 @@ func fetchRubyInterpreterInfo(pid int, mappings Mappings) (*Interpreter, error) 
 		librubyPath        string
 	)
 
+	// Find the load address for the interpreter.
 	for _, mapping := range mappings {
 		if strings.Contains(mapping.Pathname, "ruby") {
 			startAddr := uint64(mapping.StartAddr)
 			rubyBaseAddress = &startAddr
+			break
 		}
+	}
 
+	// Find the dynamically loaded libruby, if it exists.
+	for _, mapping := range mappings {
 		if strings.Contains(mapping.Pathname, "libruby") {
 			startAddr := uint64(mapping.StartAddr)
 			librubyPath = mapping.Pathname
 			librubyBaseAddress = &startAddr
 		}
+		break
 	}
 
-	// Doesn't seem like a Ruby process.
+	// If we can't find either, this is most likely not a Ruby
+	// process.
 	if rubyBaseAddress == nil && librubyBaseAddress == nil {
 		return nil, fmt.Errorf("Does not look like a Ruby Process")
 	}
@@ -253,7 +261,11 @@ func fetchRubyInterpreterInfo(pid int, mappings Mappings) (*Interpreter, error) 
 		rubyExecutable = path.Join("/proc/", fmt.Sprintf("%d", pid), "/root/", librubyPath)
 	}
 
-	// Fetch Ruby version
+	// Read the Ruby version.
+	//
+	// PERF(javierhonduco): Using Go's ELF reader in the stdlib is very
+	// expensive. Do this in a streaming fashion rather than loading everything
+	// at once.
 	elfFile, err := elf.Open(rubyExecutable)
 	if err != nil {
 		return nil, fmt.Errorf("Error opening ELF: %w", err)
@@ -274,14 +286,13 @@ func fetchRubyInterpreterInfo(pid int, mappings Mappings) (*Interpreter, error) 
 				return nil, fmt.Errorf("Error opening ruby executable: %w", err)
 			}
 
-			f.Seek(int64(address), os.SEEK_SET)
+			f.Seek(int64(address), io.SeekStart)
 			f.Read(rubyVersionBuf)
 
 			rubyVersion = string(rubyVersionBuf)
 		}
 	}
 
-	// Could not find
 	if rubyVersion == "" {
 		return nil, fmt.Errorf("Could not find Ruby version")
 	}
@@ -303,9 +314,14 @@ func fetchRubyInterpreterInfo(pid int, mappings Mappings) (*Interpreter, error) 
 		vmPointerSymbol = "ruby_current_vm"
 	}
 
+	// We first try to find the symbol in the symbol table, and then in
+	// the dynamic symbol table.
+
 	mainThreadAddress := uint64(0)
 	for _, symbol := range symbols {
-		// TODO fix this
+		// TODO(javierhonduco): Using contains is a bit of a hack. Ideally
+		// we would like to find out which exact symbol to look for depending
+		// on the Ruby version.
 		if strings.Contains(symbol.Name, vmPointerSymbol) {
 			mainThreadAddress = symbol.Value
 		}
@@ -317,7 +333,7 @@ func fetchRubyInterpreterInfo(pid int, mappings Mappings) (*Interpreter, error) 
 			return nil, fmt.Errorf("Error reading dynamic ELF symbols: %w", err)
 		}
 		for _, symbol := range dynSymbols {
-			// TODO fix this
+			// TODO(javierhonduco): Same as above.
 			if strings.Contains(symbol.Name, vmPointerSymbol) {
 				mainThreadAddress = symbol.Value
 			}
@@ -325,7 +341,7 @@ func fetchRubyInterpreterInfo(pid int, mappings Mappings) (*Interpreter, error) 
 	}
 
 	if mainThreadAddress == 0 {
-		panic("should not be zero")
+		return nil, fmt.Errorf("mainThreadAddress should never be zero")
 	}
 
 	if librubyBaseAddress == nil {
