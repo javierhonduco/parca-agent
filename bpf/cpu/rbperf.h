@@ -4,16 +4,7 @@
 // LICENSE file in the root directory of this source tree.
 
 #include "basic_types.h"
-
-///
-#define MAX_STACK_DEPTH 127
-
-typedef struct {
-  u64 len;
-  u64 addresses[MAX_STACK_DEPTH];
-} stack_trace_copy_t;
-
-///
+#include "common.h"
 
 #define COMM_MAXLEN 25
 #define METHOD_MAXLEN 50
@@ -84,7 +75,7 @@ typedef struct {
 
 typedef struct {
     u64 timestamp;
-    stack_trace_copy_t frames;
+    stack_trace_t frames;
 
     u32 pid;
     u32 cpu;
