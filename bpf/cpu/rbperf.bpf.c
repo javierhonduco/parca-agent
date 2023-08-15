@@ -209,7 +209,6 @@ read_frame(u64 pc, u64 body, RubyFrame *current_frame,
     read_ruby_string(version_offsets, label, current_frame->method_name,
                      sizeof(current_frame->method_name));
 
-    bpf_printk("[debug] method name=%s", current_frame->method_name);
     LOG("[debug] method name=%s", current_frame->method_name);
 }
 
@@ -219,27 +218,23 @@ int walk_ruby_stack(struct bpf_perf_event_data *ctx) {
     u64 pc;
     u64 pc_addr;
     u64 body;
-        bpf_printk("======== 1");
 
     int zero = 0;
     SampleState *state = bpf_map_lookup_elem(&global_state, &zero);
     if (state == NULL) {
         return 0;  // this should never happen
     }
-            bpf_printk("======== 2");
 
     RubyVersionOffsets *version_offsets = bpf_map_lookup_elem(&version_specific_offsets, &state->rb_version);
     if (version_offsets == NULL) {
         return 0;  // this should not happen
     }
-        bpf_printk("======== 3");
 
     RubyFrame current_frame = {};
     u64 base_stack = state->base_stack;
     u64 cfp = state->cfp;
     state->ruby_stack_program_count += 1;
     u64 control_frame_t_sizeof = version_offsets->control_frame_t_sizeof;
-        bpf_printk("======== 4");
 
 #pragma unroll
     for (int i = 0; i < MAX_STACKS_PER_PROGRAM; i++) {
@@ -289,7 +284,7 @@ int walk_ruby_stack(struct bpf_perf_event_data *ctx) {
 
     // Hash stack.
     int ruby_stack_hash = MurmurHash2((u32 *)state->stack.frames.addresses, MAX_STACK * sizeof(u64) / sizeof(u32), 0);
-    bpf_printk("ruby stack hash: %d", ruby_stack_hash);
+    LOG("[debug] ruby stack hash: %d", ruby_stack_hash);
 
     unwind_state_t *unwind_state = bpf_map_lookup_elem(&heap, &zero);
     if (unwind_state != NULL) {
@@ -313,7 +308,6 @@ int walk_ruby_stack(struct bpf_perf_event_data *ctx) {
 
 SEC("perf_event")
 int unwind_ruby_stack(struct bpf_perf_event_data *ctx) {
-    bpf_printk("hi from ruby");
     u64 zero = 0;
     unwind_state_t *unwind_state = bpf_map_lookup_elem(&heap, &zero);
     if (unwind_state == NULL) {
@@ -332,9 +326,6 @@ int unwind_ruby_stack(struct bpf_perf_event_data *ctx) {
     ProcessData *process_data = bpf_map_lookup_elem(&pid_to_rb_thread, &pid);
 
     if (process_data != NULL && process_data->rb_frame_addr != 0) {
-
-        bpf_printk("[debug] reading Ruby stack");
-
         struct task_struct *task = (void *)bpf_get_current_task();
         if (task == NULL) {
             LOG("[error] task_struct was NULL");
@@ -428,10 +419,9 @@ int unwind_ruby_stack(struct bpf_perf_event_data *ctx) {
         state->ruby_stack_program_count = 0;
         state->rb_version = process_data->rb_version;
 
-        bpf_printk("about to tail call to %d", RBPERF_STACK_READING_PROGRAM_IDX);
         bpf_tail_call(ctx, &programs, RBPERF_STACK_READING_PROGRAM_IDX);
         // This will never be executed
-        bpf_printk("🙅🏻‍♂️");
+        LOG("[error] after bpf_tail_call, this should not be reached");
         return 0;
     } else {
         bpf_printk("[error] not a ruby proc");

@@ -19,6 +19,7 @@ import "C" //nolint:all
 import (
 	"bytes"
 	"context"
+	"debug/elf"
 	"embed"
 	"encoding/binary"
 	"errors"
@@ -336,11 +337,13 @@ func (p *CPU) addUnwindTableForProcess(pid int) {
 	executable := fmt.Sprintf("/proc/%d/exe", pid)
 	hasFramePointers, err := p.framePointerCache.HasFramePointers(executable)
 	if err != nil {
-		// It might not exist as reading procfs is racy.
-		if !errors.Is(err, os.ErrNotExist) {
-			level.Debug(p.logger).Log("msg", "frame pointer detection failed", "executable", executable, "err", err)
+		// It might not exist as reading procfs is racy. If the executable has no symbols
+		// that we use as a heuristic to detect whether it has frame pointers or not,
+		// we assume it does not and that we should generate the unwind information.
+		level.Debug(p.logger).Log("msg", "frame pointer detection failed", "executable", executable, "err", err)
+		if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, elf.ErrNoSymbols) {
+			return
 		}
-		return
 	}
 
 	if hasFramePointers {
@@ -436,7 +439,14 @@ func (p *CPU) listenEvents(ctx context.Context, eventsChan <-chan []byte, lostCh
 					if !open {
 						return
 					}
-					p.bpfMaps.refreshProcessInfo(pid)
+
+					/////////
+					procInfo, err := p.processInfoManager.Fetch(ctx, pid)
+					if err != nil {
+						level.Debug(p.logger).Log("msg", "failed to fetch process info", "pid", pid, "err", err)
+					}
+					////////////
+					p.bpfMaps.refreshProcessInfo(pid, procInfo.Interpreter)
 					refreshInProgress.Delete(pid)
 				}
 			}

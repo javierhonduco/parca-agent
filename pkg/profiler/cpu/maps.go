@@ -829,7 +829,7 @@ func (m *bpfMaps) resetMappingInfoBuffer() error {
 
 // refreshProcessInfo updates the process information such as mappings and unwind
 // information if the executable mappings have changed.
-func (m *bpfMaps) refreshProcessInfo(pid int) {
+func (m *bpfMaps) refreshProcessInfo(pid int, interp *process.Interpreter) {
 	level.Debug(m.logger).Log("msg", "refreshing process info", "pid", pid)
 
 	cachedHash, _ := m.processCache.Get(pid)
@@ -850,7 +850,7 @@ func (m *bpfMaps) refreshProcessInfo(pid int) {
 	}
 
 	if cachedHash != currentHash {
-		err := m.addUnwindTableForProcess(pid, nil, executableMappings, false)
+		err := m.addUnwindTableForProcess(pid, interp, executableMappings, false)
 		if err != nil {
 			level.Error(m.logger).Log("msg", "addUnwindTableForProcess failed", "err", err)
 		}
