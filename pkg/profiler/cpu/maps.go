@@ -553,7 +553,7 @@ func (m *bpfMaps) create() error {
 }
 
 func (m *bpfMaps) addInterpreter(pid int, interpreter process.Interpreter) error {
-	switch interpreter.Name {
+	switch interpreter.Type {
 	case process.Ruby:
 		procData := rbperf.ProcessData{
 			Rb_frame_addr: interpreter.MainThreadAddress,
@@ -563,7 +563,7 @@ func (m *bpfMaps) addInterpreter(pid int, interpreter process.Interpreter) error
 		}
 		return m.setRbperfProcessData(pid, procData)
 	default:
-		return fmt.Errorf("invalid interpreter name: %d", interpreter.Name)
+		return fmt.Errorf("invalid interpreter name: %d", interpreter.Type)
 	}
 }
 
@@ -850,7 +850,7 @@ func (m *bpfMaps) refreshProcessInfo(pid int) {
 	}
 
 	if cachedHash != currentHash {
-		err := m.addUnwindTableForProcess(pid, executableMappings, false)
+		err := m.addUnwindTableForProcess(pid, nil, executableMappings, false)
 		if err != nil {
 			level.Error(m.logger).Log("msg", "addUnwindTableForProcess failed", "err", err)
 		}
@@ -861,7 +861,7 @@ func (m *bpfMaps) refreshProcessInfo(pid int) {
 // 2. For each section, generate compact table
 // 3. Add table to maps
 // 4. Add map metadata to process
-func (m *bpfMaps) addUnwindTableForProcess(pid int, executableMappings unwind.ExecutableMappings, checkCache bool) error {
+func (m *bpfMaps) addUnwindTableForProcess(pid int, interp *process.Interpreter, executableMappings unwind.ExecutableMappings, checkCache bool) error {
 	// Notes:
 	//	- perhaps we could cache based on `start_at` (but parsing this procfs file properly
 	// is challenging if the process name contains spaces, etc).
@@ -908,7 +908,11 @@ func (m *bpfMaps) addUnwindTableForProcess(pid int, executableMappings unwind.Ex
 	// .is_jit_compiler
 	mappingInfoMemory.PutUint64(isJitCompiler)
 	// .interpreter_type
-	mappingInfoMemory.PutUint64(1)
+	var interpreterType uint64
+	if interp != nil {
+		interpreterType = uint64(interp.Type)
+	}
+	mappingInfoMemory.PutUint64(interpreterType)
 	// .len
 	mappingInfoMemory.PutUint64(uint64(len(executableMappings)))
 
