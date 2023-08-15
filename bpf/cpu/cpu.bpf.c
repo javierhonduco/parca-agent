@@ -134,7 +134,6 @@ typedef u64 stack_trace_type[MAX_STACK_DEPTH];
 
 #define BPF_HASH(_name, _key_type, _value_type, _max_entries) BPF_MAP(_name, BPF_MAP_TYPE_HASH, _key_type, _value_type, _max_entries);
 
-
 // Tried to read a kernel stack from a non-kernel context.
 #define IN_USERSPACE(err) (err == -EFAULT)
 
@@ -973,8 +972,6 @@ int walk_user_stacktrace_impl(struct bpf_perf_event_data *ctx) {
       bump_unwind_success_dwarf();
       // success_dwarf_to_jit keeps track of transition from DWARF unwinding to JIT unwinding
       dwarf_to_jit = true;
-      // Traverse interpreter stack.
-      bpf_tail_call(ctx, &programs, RUBY_UNWINDER_PROGRAM_ID);
       add_stack(ctx, pid_tgid, STACK_WALKING_METHOD_DWARF, unwind_state);
     } else {
       int user_pid = pid_tgid;
@@ -1023,7 +1020,7 @@ static __always_inline bool set_initial_state(bpf_user_pt_regs_t *regs) {
   unwind_state->stack.len = 0;
   unwind_state->tail_calls = 0;
   unwind_state->unwinding_jit = false;
-  // Reset key.
+  // Reset stack key.
   unwind_state->stack_key.kernel_stack_id = 0;
   unwind_state->stack_key.pid = 0;
   unwind_state->stack_key.tgid = 0;
