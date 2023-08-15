@@ -140,7 +140,7 @@ typedef u64 stack_trace_type[MAX_STACK_DEPTH];
 #define LOG(fmt, ...)                                                                                                                                          \
   ({                                                                                                                                                           \
     if (unwinder_config.verbose_logging) {                                                                                                                     \
-      bpf_printk(fmt " (line: %d)", __LINE__, ## __VA_ARGS__);                                                                                                                          \
+      bpf_printk(fmt " (line: %d)", ## __VA_ARGS__ , __LINE__);                                                                                                                          \
     }                                                                                                                                                          \
   })
 
@@ -627,30 +627,21 @@ static __always_inline void add_stack(struct bpf_perf_event_data *ctx, u64 pid_t
   }
   stack_key->kernel_stack_id = kernel_stack_id;
 
-  // Continue unwinding interpreter, if any.
-
-  int aaa = pid_tgid;
-
-  process_info_t *proc_info = bpf_map_lookup_elem(&process_info, &user_tgid); // @nocommit: should be the other one, this is completely wrong... are we mixing up things above?
-  if (proc_info == NULL) {
-    LOG("[error] should never happen");
-    return;
-  }
-
-  // Tail-calls do not return.
   request_process_mappings(ctx, user_pid);
 
-  switch (proc_info->interpreter_type) {
+  // Continue unwinding interpreter, if any.
+  switch (unwind_state->interpreter_type) {
     case INTERPRETER_TYPE_UNDEFINED:
-      LOG("[debug] not an interpreter");
+      // Most programs aren't interpreters, this can be rather verbose.
+      // LOG("[debug] not an interpreter");
       aggregate_stacks();
       break;
     case INTERPRETER_TYPE_RUBY:
-      LOG("[debug] Ruby interpreter");
+      LOG("[debug] tail-call to Ruby interpreter");
       bpf_tail_call(ctx, &programs, RUBY_UNWINDER_PROGRAM_ID);
       break;
     default:
-      LOG("[warn] bad interpreter value: %d", proc_info->interpreter_type);
+      LOG("[error] bad interpreter value: %d", unwind_state->interpreter_type);
       break;
   }
 }
@@ -1020,6 +1011,7 @@ static __always_inline bool set_initial_state(bpf_user_pt_regs_t *regs) {
   unwind_state->stack.len = 0;
   unwind_state->tail_calls = 0;
   unwind_state->unwinding_jit = false;
+  unwind_state->interpreter_type = 0;
   // Reset stack key.
   unwind_state->stack_key.kernel_stack_id = 0;
   unwind_state->stack_key.pid = 0;
@@ -1092,8 +1084,11 @@ int profile_cpu(struct bpf_perf_event_data *ctx) {
     return 0;
   }
 
+
   // 1. If we have unwind information for a process, use it.
   if (has_unwind_information(user_pid)) {
+    bump_samples();
+
     chunk_info_t *chunk_info = NULL;
     enum find_unwind_table_return unwind_table_result = find_unwind_table(&chunk_info, user_pid, unwind_state->ip, NULL);
     if (chunk_info == NULL) {
@@ -1102,6 +1097,9 @@ int profile_cpu(struct bpf_perf_event_data *ctx) {
         LOG("[error] should never happen");
         return 1;
       }
+
+      // Set the interpreter type before we start unwinding.
+      unwind_state->interpreter_type = proc_info->interpreter_type;
 
       if (unwind_table_result == FIND_UNWIND_MAPPING_NOT_FOUND) {
         LOG("[warn] IP 0x%llx not covered, mapping not found.", unwind_state->ip);

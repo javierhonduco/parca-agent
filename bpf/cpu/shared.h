@@ -26,7 +26,7 @@ typedef struct {
   stack_trace_t stack;
   bool unwinding_jit; // set to true during JITed unwinding; false unless mixed-mode unwinding is enabled
 
-  // interpreter type ?
+  u64 interpreter_type;
   stack_count_key_t stack_key; // @nocommit: if first field, we get garbage?
 } unwind_state_t;
 
