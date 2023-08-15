@@ -134,7 +134,7 @@ typedef u64 stack_trace_type[MAX_STACK_DEPTH];
 #define LOG(fmt, ...)                                                                                                                                          \
   ({                                                                                                                                                           \
     if (unwinder_config.verbose_logging) {                                                                                                                     \
-      bpf_printk(fmt, ##__VA_ARGS__);                                                                                                                          \
+      bpf_printk(fmt " (line: %d)", __LINE__, ## __VA_ARGS__);                                                                                                                          \
     }                                                                                                                                                          \
   })
 
@@ -282,7 +282,7 @@ static void bump_samples() {
 static __always_inline void request_unwind_information(struct bpf_perf_event_data *ctx, int user_pid) {
   char comm[20];
   bpf_get_current_comm(comm, 20);
-  LOG("[debug] no fp, no unwind info for PID: %d, comm: %s ctx IP: %llx", user_pid, comm, PT_REGS_IP(&ctx->regs));
+  LOG("[debug] requesting unwind info for PID: %d, comm: %s ctx IP: %llx", user_pid, comm, PT_REGS_IP(&ctx->regs));
 
   u64 payload = REQUEST_UNWIND_INFORMATION | user_pid;
   bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &payload, sizeof(u64));
@@ -603,7 +603,10 @@ static __always_inline void add_stack(struct bpf_perf_event_data *ctx, u64 pid_t
   stack_key->kernel_stack_id = kernel_stack_id;
 
   // Continue unwinding interpreter, if any.
-  process_info_t *proc_info = bpf_map_lookup_elem(&process_info, &user_tgid); // @nocommit: should be the other one, this is completely wrong... are we mixing up things above?
+
+  int aaa = pid_tgid;
+
+  process_info_t *proc_info = bpf_map_lookup_elem(&process_info, &aaa); // @nocommit: should be the other one, this is completely wrong... are we mixing up things above?
   if (proc_info == NULL) {
     LOG("[error] should never happen");
     return;
