@@ -205,30 +205,7 @@ func (c *Converter) Convert(ctx context.Context, rawData []profile.RawSample, in
 		}
 
 		for _, frameID := range sample.InterpreterStack {
-			interpreterSymbol := interpreterFrames[uint32(frameID)]
-
-			////////////
-			/* 		kernelSymbol, ok := kernelSymbols[addr]
-			if !ok {
-				kernelSymbol = "not found"
-			}
-			*/
-			/* 			if l, ok := c.interpreterLocationIndex[kernelSymbol]; ok {
-				return l
-			} */
-
-			l := &pprofprofile.Location{
-				ID:      uint64(len(c.result.Location)) + 1,
-				Mapping: c.interpreterMapping,
-				Line: []pprofprofile.Line{{
-					Function: c.addFunction(interpreterSymbol),
-				}},
-			}
-
-			c.interpreterLocationIndex[interpreterSymbol] = l
-			c.result.Location = append(c.result.Location, l)
-
-			////////////////
+			l := c.addInterpreterLocation(interpreterFrames, frameID)
 			pprofSample.Location = append(pprofSample.Location, l)
 		}
 
@@ -298,6 +275,30 @@ func (c *Converter) addKernelLocation(
 	}
 
 	c.kernelLocationIndex[kernelSymbol] = l
+	c.result.Location = append(c.result.Location, l)
+
+	return l
+}
+
+func (c *Converter) addInterpreterLocation(
+	interpreterFrames map[uint32]string,
+	frameID uint64,
+) *pprofprofile.Location {
+	interpreterSymbol := interpreterFrames[uint32(frameID)]
+
+	if l, ok := c.interpreterLocationIndex[interpreterSymbol]; ok {
+		return l
+	}
+
+	l := &pprofprofile.Location{
+		ID:      uint64(len(c.result.Location)) + 1,
+		Mapping: c.interpreterMapping,
+		Line: []pprofprofile.Line{{
+			Function: c.addFunction(interpreterSymbol),
+		}},
+	}
+
+	c.interpreterLocationIndex[interpreterSymbol] = l
 	c.result.Location = append(c.result.Location, l)
 
 	return l
