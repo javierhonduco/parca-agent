@@ -115,7 +115,7 @@ func (m *Manager) NewConverter(
 
 	interpreterMapping := &pprofprofile.Mapping{
 		ID:   uint64(len(pprofMappings)) + 1, // +1 because pprof uses 1-indexing to be able to differentiate from 0 (unset).
-		File: "[interpreter]",                // TODO: add right interpreter?
+		File: "interpreter",
 	}
 	pprofMappings = append(pprofMappings, interpreterMapping)
 
@@ -199,6 +199,11 @@ func (c *Converter) Convert(ctx context.Context, rawData []profile.RawSample, in
 			Label:    make(map[string][]string),
 		}
 
+		for _, addr := range sample.KernelStack {
+			l := c.addKernelLocation(c.kernelMapping, kernelSymbols, addr)
+			pprofSample.Location = append(pprofSample.Location, l)
+		}
+
 		for _, frameID := range sample.InterpreterStack {
 			interpreterSymbol := interpreterFrames[uint32(frameID)]
 
@@ -224,11 +229,6 @@ func (c *Converter) Convert(ctx context.Context, rawData []profile.RawSample, in
 			c.result.Location = append(c.result.Location, l)
 
 			////////////////
-			pprofSample.Location = append(pprofSample.Location, l)
-		}
-
-		for _, addr := range sample.KernelStack {
-			l := c.addKernelLocation(c.kernelMapping, kernelSymbols, addr)
 			pprofSample.Location = append(pprofSample.Location, l)
 		}
 
