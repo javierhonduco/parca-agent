@@ -314,7 +314,9 @@ func fetchRubyInterpreterInfo(pid int, mappings Mappings) (*Interpreter, error) 
 		return nil, fmt.Errorf("could not parse version: %w", err)
 	}
 
-	vmPointerSymbol := ""
+	var (
+		vmPointerSymbol string
+	)
 	if major == 2 && minor >= 5 {
 		vmPointerSymbol = "ruby_current_vm_ptr"
 	} else {
