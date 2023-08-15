@@ -184,14 +184,17 @@ func NewInfoManager(
 	return im
 }
 
-type InterpreterType int
+type InterpreterType uint64
 
 const (
-	Ruby InterpreterType = iota
+	None InterpreterType = iota
+	Ruby
 )
 
 func (it InterpreterType) String() string {
 	switch it {
+	case None:
+		return "<not an interpreter>"
 	case Ruby:
 		return "Ruby"
 	default:
@@ -200,7 +203,7 @@ func (it InterpreterType) String() string {
 }
 
 type Interpreter struct {
-	Name              InterpreterType
+	Type              InterpreterType
 	Version           string
 	MainThreadAddress uint64
 }
