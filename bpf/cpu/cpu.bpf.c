@@ -21,15 +21,9 @@
 #define RUBY_UNWINDER_PROGRAM_ID 1
 
 // Number of frames to walk per tail call iteration.
-<<<<<<< HEAD
 #define MAX_STACK_DEPTH_PER_PROGRAM 11
 // Number of BPF tail calls that will be attempted.
 #define MAX_TAIL_CALLS 12
-=======
-#define MAX_STACK_DEPTH_PER_PROGRAM 10
-// Number of BPF tail calls that will be attempted.
-#define MAX_TAIL_CALLS 20
->>>>>>> 1a29a86a (ruby stack hash)
 // Maximum number of frames.
 #define MAX_STACK_DEPTH 127
 _Static_assert(MAX_TAIL_CALLS *MAX_STACK_DEPTH_PER_PROGRAM >= MAX_STACK_DEPTH, "enough iterations to traverse the whole stack");
@@ -168,23 +162,6 @@ typedef struct {
   chunk_info_t chunks[MAX_UNWIND_TABLE_CHUNKS];
 } unwind_info_chunks_t;
 
-<<<<<<< HEAD
-// The addresses of a native stack trace.
-typedef struct {
-  u64 len;
-  u64 addresses[MAX_STACK_DEPTH];
-} stack_trace_t;
-
-typedef struct {
-  int pid;
-  int tid;
-  int user_stack_id;
-  int kernel_stack_id;
-  int user_stack_id_dwarf;
-} stack_count_key_t;
-
-=======
->>>>>>> 2e914c0f (share stack_counts map + other changes)
 // Represents an executable mapping.
 typedef struct {
   u64 load_address;
@@ -655,7 +632,7 @@ static __always_inline void add_stack(struct bpf_perf_event_data *ctx, u64 pid_t
 
   int aaa = pid_tgid;
 
-  process_info_t *proc_info = bpf_map_lookup_elem(&process_info, &aaa); // @nocommit: should be the other one, this is completely wrong... are we mixing up things above?
+  process_info_t *proc_info = bpf_map_lookup_elem(&process_info, &user_tgid); // @nocommit: should be the other one, this is completely wrong... are we mixing up things above?
   if (proc_info == NULL) {
     LOG("[error] should never happen");
     return;

@@ -59,11 +59,6 @@ require (
 	k8s.io/apimachinery v0.27.4
 	k8s.io/client-go v0.27.4
 	k8s.io/cri-api v0.27.4
-	k8s.io/api v0.27.3
-	k8s.io/apimachinery v0.27.3
-	k8s.io/client-go v0.27.3
-	k8s.io/cri-api v0.27.3
-	modernc.org/libc v1.24.1
 )
 
 require (
@@ -186,8 +181,6 @@ require (
 	k8s.io/klog/v2 v2.100.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20230525220651-2546d827e515 // indirect
 	k8s.io/utils v0.0.0-20230711102312-30195339c3c7 // indirect
-	k8s.io/kube-openapi v0.0.0-20230501164219-8b0f38b5fd1f // indirect
-	k8s.io/utils v0.0.0-20230308161112-d77c459e9343 // indirect
 	sigs.k8s.io/json v0.0.0-20221116044647-bc3834ca7abd // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.3.0 // indirect
 	sigs.k8s.io/yaml v1.3.0 // indirect

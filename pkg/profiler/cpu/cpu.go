@@ -884,7 +884,7 @@ type (
 	// TODO(https://github.com/parca-dev/parca-agent/issues/207)
 	stackCountKey struct {
 		PID                int32
-		TGID               int32
+		TID                int32
 		UserStackID        int32
 		KernelStackID      int32
 		UserStackIDDWARF   int32

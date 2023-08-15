@@ -89,6 +89,7 @@ type Converter struct {
 	interpreterLocationIndex map[string]*pprofprofile.Location
 	vdsoLocationIndex        map[string]*pprofprofile.Location
 
+	pfs                procfs.FS
 	pid                int
 	mappings           []*process.Mapping
 	kernelMapping      *pprofprofile.Mapping
@@ -134,17 +135,11 @@ func (m *Manager) NewConverter(
 		interpreterLocationIndex: map[string]*pprofprofile.Location{},
 		vdsoLocationIndex:        map[string]*pprofprofile.Location{},
 
-<<<<<<< HEAD
-		pfs:           pfs,
-		pid:           pid,
-		mappings:      mappings,
-		kernelMapping: kernelMapping,
-=======
+		pfs:                pfs,
 		pid:                pid,
 		mappings:           mappings,
 		kernelMapping:      kernelMapping,
 		interpreterMapping: interpreterMapping,
->>>>>>> f513f090 (baby profile generation)
 
 		threadNameCache: map[int]string{},
 
