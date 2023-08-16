@@ -21,9 +21,9 @@
 #define RUBY_UNWINDER_PROGRAM_ID 1
 
 // Number of frames to walk per tail call iteration.
-#define MAX_STACK_DEPTH_PER_PROGRAM 11
+#define MAX_STACK_DEPTH_PER_PROGRAM 5
 // Number of BPF tail calls that will be attempted.
-#define MAX_TAIL_CALLS 12
+#define MAX_TAIL_CALLS 26
 // Maximum number of frames.
 #define MAX_STACK_DEPTH 127
 _Static_assert(MAX_TAIL_CALLS *MAX_STACK_DEPTH_PER_PROGRAM >= MAX_STACK_DEPTH, "enough iterations to traverse the whole stack");
@@ -630,6 +630,8 @@ static __always_inline void add_stack(struct bpf_perf_event_data *ctx, u64 pid_t
   request_process_mappings(ctx, user_pid);
 
   // Continue unwinding interpreter, if any.
+  //  bpf_printk("interp %d", unwind_state->interpreter_type);
+
   switch (unwind_state->interpreter_type) {
   case INTERPRETER_TYPE_UNDEFINED:
     // Most programs aren't interpreters, this can be rather verbose.
@@ -1088,18 +1090,18 @@ int profile_cpu(struct bpf_perf_event_data *ctx) {
   if (has_unwind_information(user_pid)) {
     bump_samples();
 
+    process_info_t *proc_info = bpf_map_lookup_elem(&process_info, &user_pid);
+    if (proc_info == NULL) {
+      LOG("[error] should never happen");
+      return 1;
+    }
+
+    // Set the interpreter type before we start unwinding.
+    unwind_state->interpreter_type = proc_info->interpreter_type;
+
     chunk_info_t *chunk_info = NULL;
     enum find_unwind_table_return unwind_table_result = find_unwind_table(&chunk_info, user_pid, unwind_state->ip, NULL);
     if (chunk_info == NULL) {
-      process_info_t *proc_info = bpf_map_lookup_elem(&process_info, &user_pid);
-      if (proc_info == NULL) {
-        LOG("[error] should never happen");
-        return 1;
-      }
-
-      // Set the interpreter type before we start unwinding.
-      unwind_state->interpreter_type = proc_info->interpreter_type;
-
       if (unwind_table_result == FIND_UNWIND_MAPPING_NOT_FOUND) {
         LOG("[warn] IP 0x%llx not covered, mapping not found.", unwind_state->ip);
         request_refresh_process_info(ctx, user_pid);

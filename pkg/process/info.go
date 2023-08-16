@@ -317,9 +317,7 @@ func fetchRubyInterpreterInfo(pid int, mappings Mappings) (*Interpreter, error) 
 		return nil, fmt.Errorf("could not parse version: %w", err)
 	}
 
-	var (
-		vmPointerSymbol string
-	)
+	var vmPointerSymbol string
 	if major == 2 && minor >= 5 {
 		vmPointerSymbol = "ruby_current_vm_ptr"
 	} else {
@@ -361,9 +359,6 @@ func fetchRubyInterpreterInfo(pid int, mappings Mappings) (*Interpreter, error) 
 	} else {
 		mainThreadAddress += *librubyBaseAddress
 	}
-
-	// @nocommit
-	// fmt.Println("=== main Ruby thread", mainThreadAddress, "vmpointer", vmPointerSymbol, "for pid", pid, "rubyVersion", rubyVersion)
 
 	interp := Interpreter{
 		Ruby,

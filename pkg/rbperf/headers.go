@@ -11,19 +11,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// nolint: stylecheck, unused, misspell
+// nolint: unused
 package rbperf
-
-const (
-	STACK_COMPLETE   = 0
-	STACK_INCOMPLETE = 1
-)
-
-const (
-	RBPERF_EVENT_UNKNOWN         = 0
-	RBPERF_EVENT_ON_CPU_SAMPLING = 1
-	RBPERF_EVENT_SYSCALL         = 2
-)
 
 type (
 	s8  = int8
@@ -37,31 +26,31 @@ type (
 )
 
 type RubyFrame struct {
-	Lineno      u32
-	Method_name [50]uint8
-	Path        [150]uint8
+	Lineno     u32
+	MethodName [50]uint8
+	Path       [150]uint8
 }
 
 type ProcessData struct {
-	Rb_frame_addr u64
-	Rb_version    u32
-	Padding_      [4]byte
-	Start_time    u64
+	RbFrameAddr u64
+	RbVersion   u32
+	Padding_    [4]byte
+	StartTime   u64
 }
 
 type RubyVersionOffsets struct {
-	Major_version          int32
-	Minor_version          int32
-	Patch_version          int32
-	Vm_offset              int32
-	Vm_size_offset         int32
-	Control_frame_t_sizeof int32
-	Cfp_offset             int32
-	Label_offset           int32
-	Path_flavour           int32
-	Line_info_size_offset  int32
-	Line_info_table_offset int32
-	Lineno_offset          int32
-	Main_thread_offset     int32
-	Ec_offset              int32
+	MajorVersion        int32
+	MinorVersion        int32
+	PatchVersion        int32
+	VMOffset            int32
+	VMSizeOffset        int32
+	ControlFrameSizeof  int32
+	CfpOffset           int32
+	LabelOffset         int32
+	PathFlavour         int32
+	LineInfoSizeOffset  int32
+	LineInfoTableOffset int32
+	LinenoOffset        int32
+	MainThreadOffset    int32
+	EcOffset            int32
 }

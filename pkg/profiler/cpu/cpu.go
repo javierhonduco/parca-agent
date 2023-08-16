@@ -443,7 +443,7 @@ func (p *CPU) listenEvents(ctx context.Context, eventsChan <-chan []byte, lostCh
 					/////////
 					procInfo, err := p.processInfoManager.Fetch(ctx, pid)
 					if err != nil {
-						level.Debug(p.logger).Log("msg", "failed to fetch process info", "pid", pid, "err", err)
+						level.Error(p.logger).Log("msg", "failed to fetch process info", "pid", pid, "err", err)
 					}
 					////////////
 					p.bpfMaps.refreshProcessInfo(pid, procInfo.Interpreter)

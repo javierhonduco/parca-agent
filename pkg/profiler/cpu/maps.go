@@ -266,7 +266,7 @@ func (c *processCache) close() error {
 	return nil
 }
 
-func initializeMaps(logger log.Logger, reg prometheus.Registerer, module *bpf.Module, rbperfModule *bpf.Module, byteOrder binary.ByteOrder) (*bpfMaps, error) {
+func initializeMaps(logger log.Logger, reg prometheus.Registerer, module, rbperfModule *bpf.Module, byteOrder binary.ByteOrder) (*bpfMaps, error) {
 	if module == nil {
 		return nil, fmt.Errorf("nil module")
 	}
@@ -394,20 +394,20 @@ func (m *bpfMaps) setRbperfVersionOffsets(versionOffsets rbperf.RubyVersionOffse
 // TODO: Add more versions.
 func (m *bpfMaps) SetInterpreterData() error {
 	offset := rbperf.RubyVersionOffsets{
-		3,
-		0,
-		4,
-		0,
-		8,
-		56,
-		16,
-		16,
-		1,
-		136,
-		120,
-		0,
-		32,
-		520,
+		MajorVersion:        3,
+		MinorVersion:        0,
+		PatchVersion:        4,
+		VMOffset:            0,
+		VMSizeOffset:        8,
+		ControlFrameSizeof:  56,
+		CfpOffset:           16,
+		LabelOffset:         16,
+		PathFlavour:         1,
+		LineInfoSizeOffset:  136,
+		LineInfoTableOffset: 120,
+		LinenoOffset:        0,
+		MainThreadOffset:    32,
+		EcOffset:            520,
 	}
 	return m.setRbperfVersionOffsets(offset)
 }
@@ -556,10 +556,10 @@ func (m *bpfMaps) addInterpreter(pid int, interpreter process.Interpreter) error
 	switch interpreter.Type {
 	case process.Ruby:
 		procData := rbperf.ProcessData{
-			Rb_frame_addr: interpreter.MainThreadAddress,
-			Rb_version:    m.indexForRubyVersion(interpreter.Version),
-			Padding_:      [4]byte{0, 0, 0, 0},
-			Start_time:    0, // Unused as of now.
+			RbFrameAddr: interpreter.MainThreadAddress,
+			RbVersion:   m.indexForRubyVersion(interpreter.Version),
+			Padding_:    [4]byte{0, 0, 0, 0},
+			StartTime:   0, // Unused as of now.
 		}
 		return m.setRbperfProcessData(pid, procData)
 	default:
@@ -738,7 +738,7 @@ func (m *bpfMaps) readAndLoadSymbolTable() error {
 			return fmt.Errorf("read interpreter frame bytes, %w: %w", err, errUnrecoverable)
 		}
 
-		m.InterpreterFrames[frameIndex] = cStringToGo(frame.Method_name[:])
+		m.InterpreterFrames[frameIndex] = cStringToGo(frame.MethodName[:])
 	}
 
 	return nil
@@ -912,6 +912,7 @@ func (m *bpfMaps) addUnwindTableForProcess(pid int, interp *process.Interpreter,
 	if interp != nil {
 		interpreterType = uint64(interp.Type)
 	}
+
 	mappingInfoMemory.PutUint64(interpreterType)
 	// .len
 	mappingInfoMemory.PutUint64(uint64(len(executableMappings)))
