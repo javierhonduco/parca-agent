@@ -140,7 +140,7 @@ typedef u64 stack_trace_type[MAX_STACK_DEPTH];
 #define LOG(fmt, ...)                                                                                                                                          \
   ({                                                                                                                                                           \
     if (unwinder_config.verbose_logging) {                                                                                                                     \
-      bpf_printk(fmt " (line: %d)", ## __VA_ARGS__ , __LINE__);                                                                                                                          \
+      bpf_printk(fmt, ##__VA_ARGS__);                                                                                                                          \
     }                                                                                                                                                          \
   })
 
@@ -631,18 +631,18 @@ static __always_inline void add_stack(struct bpf_perf_event_data *ctx, u64 pid_t
 
   // Continue unwinding interpreter, if any.
   switch (unwind_state->interpreter_type) {
-    case INTERPRETER_TYPE_UNDEFINED:
-      // Most programs aren't interpreters, this can be rather verbose.
-      // LOG("[debug] not an interpreter");
-      aggregate_stacks();
-      break;
-    case INTERPRETER_TYPE_RUBY:
-      LOG("[debug] tail-call to Ruby interpreter");
-      bpf_tail_call(ctx, &programs, RUBY_UNWINDER_PROGRAM_ID);
-      break;
-    default:
-      LOG("[error] bad interpreter value: %d", unwind_state->interpreter_type);
-      break;
+  case INTERPRETER_TYPE_UNDEFINED:
+    // Most programs aren't interpreters, this can be rather verbose.
+    // LOG("[debug] not an interpreter");
+    aggregate_stacks();
+    break;
+  case INTERPRETER_TYPE_RUBY:
+    LOG("[debug] tail-call to Ruby interpreter");
+    bpf_tail_call(ctx, &programs, RUBY_UNWINDER_PROGRAM_ID);
+    break;
+  default:
+    LOG("[error] bad interpreter value: %d", unwind_state->interpreter_type);
+    break;
   }
 }
 
@@ -1083,7 +1083,6 @@ int profile_cpu(struct bpf_perf_event_data *ctx) {
     // This should never happen.
     return 0;
   }
-
 
   // 1. If we have unwind information for a process, use it.
   if (has_unwind_information(user_pid)) {
