@@ -49,6 +49,7 @@ import (
 	"github.com/parca-dev/parca-agent/pkg/profile"
 	"github.com/parca-dev/parca-agent/pkg/profiler"
 	"github.com/parca-dev/parca-agent/pkg/profiler/cpu"
+	"github.com/parca-dev/parca-agent/pkg/tsan"
 	"github.com/parca-dev/parca-agent/pkg/vdso"
 )
 
@@ -364,16 +365,22 @@ func profileDuration() time.Duration {
 	return 5 * time.Second
 }
 
+func isRaceDetectorEnabled() bool {
+	return tsan.Enabled
+}
+
 // TestCPUProfilerWorks is the integration test for the CPU profiler. It
 // uses an in-memory profile writer to be verify that the data we produce
 // is correct.
 func TestCPUProfilerWorks(t *testing.T) {
-	defer goleak.VerifyNone(
-		t,
-		goleak.IgnoreTopFunction("github.com/baidubce/bce-sdk-go/util/log.NewLogger.func1"),
-		goleak.IgnoreTopFunction("github.com/golang/glog.(*fileSink).flushDaemon"),
-		goleak.IgnoreTopFunction("go.opencensus.io/stats/view.(*worker).start"),
-	)
+	if !isRaceDetectorEnabled() {
+		defer goleak.VerifyNone(
+			t,
+			goleak.IgnoreTopFunction("github.com/baidubce/bce-sdk-go/util/log.NewLogger.func1"),
+			goleak.IgnoreTopFunction("github.com/golang/glog.(*fileSink).flushDaemon"),
+			goleak.IgnoreTopFunction("go.opencensus.io/stats/view.(*worker).start"),
+		)
+	}
 
 	profileStore := NewTestProfileStore()
 	tempDir := t.TempDir()

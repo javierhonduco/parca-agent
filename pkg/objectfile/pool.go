@@ -121,6 +121,8 @@ type Pool struct {
 	logger  log.Logger
 	metrics *metrics
 
+	m sync.Mutex
+
 	// There could be multiple object files mapped to different processes.
 	keyCache Cache[string, cacheKey]
 	objCache Cache[cacheKey, *ObjectFile]
@@ -132,6 +134,7 @@ func NewPool(logger log.Logger, reg prometheus.Registerer, poolSize int, profili
 	p := &Pool{
 		logger:  logger,
 		metrics: newMetrics(reg),
+		m:       sync.Mutex{},
 		// NOTICE: The behavior is now different than the previous implementation.
 		// - The previous implementation was using a ExpireAfterAccess strategy, now it is behaves like ExpireAfterWrite strategy.
 		// - This could be better it just needs to be noted.
@@ -159,6 +162,9 @@ func (p *Pool) onEvicted(k cacheKey, obj *ObjectFile) {
 }
 
 func (p *Pool) get(key cacheKey) (*ObjectFile, error) {
+	p.m.Lock()
+	defer p.m.Unlock()
+
 	if obj, ok := p.objCache.Get(key); ok {
 		p.metrics.opened.WithLabelValues(lvShared).Inc()
 		return obj, nil
@@ -171,6 +177,7 @@ func (p *Pool) get(key cacheKey) (*ObjectFile, error) {
 // The returned reference should be released after use.
 // The file will be closed when the reference is released.
 func (p *Pool) Open(path string) (*ObjectFile, error) {
+	p.m.Lock()
 	if key, ok := p.keyCache.Get(path); ok {
 		if obj, err := p.get(key); err == nil {
 			return obj, nil
@@ -179,6 +186,7 @@ func (p *Pool) Open(path string) (*ObjectFile, error) {
 		// if it is NOT found in the objCache.
 		p.keyCache.Remove(path)
 	}
+	p.m.Unlock()
 
 	f, err := os.Open(path)
 	if err != nil {
@@ -197,7 +205,9 @@ func (p *Pool) Open(path string) (*ObjectFile, error) {
 			// - if the executable file linked to a shared library that was opened by another process.
 			// - if a singleton object was opened by another process and requested again.
 			// - if a debuginfo extracted from the same source objectfile (if happens it's a race condition).
+			p.m.Lock()
 			p.keyCache.Add(path, key)
+			p.m.Unlock()
 			return obj, nil
 		}
 	}
@@ -216,6 +226,9 @@ var (
 // The returned reference should be released after use.
 // The file will be closed when the reference is released.
 func (p *Pool) NewFile(f *os.File) (_ *ObjectFile, err error) { //nolint:nonamedreturns
+	p.m.Lock()
+	defer p.m.Unlock()
+
 	defer func() {
 		if err != nil {
 			p.metrics.opened.WithLabelValues(lvError).Inc()
