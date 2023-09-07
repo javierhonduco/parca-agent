@@ -198,8 +198,7 @@ typedef struct {
 BPF_HASH(debug_pids, int, u8, 1); // Table size will be updated in userspace.
 BPF_HASH(process_info, int, process_info_t, MAX_PROCESSES);
 
-BPF_STACK_TRACE(stack_traces, MAX_STACK_TRACES_ENTRIES);
-BPF_HASH(dwarf_stack_traces, int, stack_trace_t, MAX_STACK_TRACES_ENTRIES);
+BPF_HASH(stack_traces, int, stack_trace_t, MAX_STACK_TRACES_ENTRIES);
 
 BPF_HASH(unwind_info_chunks, u64, unwind_info_chunks_t,
          5 * 1000); // Mapping of executable ID to unwind info chunks.
@@ -595,42 +594,60 @@ static __always_inline void add_stack(struct bpf_perf_event_data *ctx, u64 pid_t
   stack_key->tgid = user_tgid;
 
   if (method == STACK_WALKING_METHOD_DWARF) {
-    int stack_hash = MurmurHash2((u32 *)unwind_state->stack.addresses, MAX_STACK_DEPTH * sizeof(u64) / sizeof(u32), 0);
-    LOG("native stack hash %d", stack_hash);
-    stack_key->user_stack_id_dwarf_id = stack_hash;
-
-    // Insert stack.
-    int err = bpf_map_update_elem(&dwarf_stack_traces, &stack_hash, &unwind_state->stack, BPF_ANY);
-    if (err != 0) {
-      LOG("[error] bpf_map_update_elem with ret: %d", err);
-    }
+    // nothing to do here
   } else if (method == STACK_WALKING_METHOD_FP) {
-    int stack_id = bpf_get_stackid(ctx, &stack_traces, BPF_F_USER_STACK);
-    // `bpf_get_stackid` returns an error if two different stacks share
+    int ret = bpf_get_stack(ctx, &unwind_state->stack, MAX_STACK_DEPTH * sizeof(u64), BPF_F_USER_STACK);
+    // `bpf_get_stack` returns an error if two different stacks share
     // their hash, but not if stack unwinding failed due to the stack being
     // truncated due to a limit on the rbp traversals or because frame
     // pointers aren't present.
-    if (stack_id < 0) {
-      LOG("[warn] bpf_get_stackid user failed with %d", stack_id);
+    if (ret < 0) {
+      LOG("[warn] bpf_get_stackid user failed with %d", ret);
       return;
     }
-    stack_key->user_stack_id = stack_id;
+    unwind_state->stack.len = ret / sizeof(u64);
+    bpf_printk("got # frames %d", unwind_state->stack.len);
   } else {
     LOG("[error] invalid native unwinding method: %d", method);
   }
 
+  // Hash user stack.
+  int user_stack_hash = MurmurHash2((u32 *)unwind_state->stack.addresses, MAX_STACK_DEPTH * sizeof(u64) / sizeof(u32), 0);
+  LOG("native stack hash %d", user_stack_hash);
+  stack_key->user_stack_id = user_stack_hash;
+
+  // Insert user stack.
+  int err = bpf_map_update_elem(&stack_traces, &user_stack_hash, &unwind_state->stack, BPF_ANY);
+  if (err != 0) {
+    LOG("[error] bpf_map_update_elem with ret: %d", err);
+  }
+
   // Get kernel stack.
-  int kernel_stack_id = bpf_get_stackid(ctx, &stack_traces, 0);
+  unwind_state->stack.len = 0;
+  int ret = bpf_get_stack(ctx, &unwind_state->stack, MAX_STACK_DEPTH * sizeof(u64), 0);
+  if (ret >= 0) {
+    unwind_state->stack.len = ret / sizeof(u64);
+
+
+    int kernel_stack_hash = MurmurHash2((u32 *)unwind_state->stack.addresses, MAX_STACK_DEPTH * sizeof(u64) / sizeof(u32), 0);
+    LOG("kernel stack hash %d", kernel_stack_hash);
+
+    int err = bpf_map_update_elem(&stack_traces, &kernel_stack_hash, &unwind_state->stack, BPF_ANY);
+    if (err != 0) {
+      LOG("[error] bpf_map_update_elem with ret: %d", err);
+    }
+    stack_key->kernel_stack_id = kernel_stack_hash;
+  }
+ /*  int kernel_stack_id = bpf_get_stackid(ctx, &stack_traces, 0);
   if (kernel_stack_id < 0 && !IN_USERSPACE(kernel_stack_id)) {
     LOG("[warn] bpf_get_stackid kernel failed with %d", kernel_stack_id);
     return;
   }
-  stack_key->kernel_stack_id = kernel_stack_id;
-
+ */
   request_process_mappings(ctx, user_pid);
 
   // Continue unwinding interpreter, if any.
-  //  bpf_printk("interp %d", unwind_state->interpreter_type);
+  // bpf_printk("interp %d", unwind_state->interpreter_type);
 
   switch (unwind_state->interpreter_type) {
   case INTERPRETER_TYPE_UNDEFINED:
@@ -1019,7 +1036,6 @@ static __always_inline bool set_initial_state(bpf_user_pt_regs_t *regs) {
   unwind_state->stack_key.pid = 0;
   unwind_state->stack_key.tgid = 0;
   unwind_state->stack_key.user_stack_id = 0;
-  unwind_state->stack_key.user_stack_id_dwarf_id = 0;
   unwind_state->stack_key.interpreter_stack_id = 0;
 
   u64 ip = 0;

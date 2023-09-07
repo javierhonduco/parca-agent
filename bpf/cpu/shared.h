@@ -14,7 +14,6 @@ typedef struct {
   int tgid;
   int user_stack_id;
   int kernel_stack_id;
-  int user_stack_id_dwarf_id;
   int interpreter_stack_id;
 } stack_count_key_t;
 

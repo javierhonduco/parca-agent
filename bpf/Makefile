@@ -71,6 +71,7 @@ $(OUT_BPF): $(BPF_SRC) $(LIBBPF_HEADERS) $(BPF_HEADERS) | $(OUT_DIR)
 		-Wdate-time \
 		-Wunused \
 		-Wall \
+		-Wduplicate-enum \
 		-fno-stack-protector \
 		-fno-jump-tables \
 		-fno-unwind-tables \
@@ -103,6 +104,7 @@ $(OUT_RBPERF): $(RBPERF_SRC) $(LIBBPF_HEADERS) $(BPF_HEADERS) | $(OUT_DIR)
 		-Wdate-time \
 		-Wunused \
 		-Wall \
+		-Wduplicate-enum \
 		-fno-stack-protector \
 		-fno-jump-tables \
 		-fno-unwind-tables \

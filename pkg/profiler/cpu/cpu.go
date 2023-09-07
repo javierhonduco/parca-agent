@@ -900,14 +900,9 @@ type (
 		TID                int32
 		UserStackID        int32
 		KernelStackID      int32
-		UserStackIDDWARF   int32
 		InterpreterStackID int32
 	}
 )
-
-func (s *stackCountKey) walkedWithDwarf() bool {
-	return s.UserStackIDDWARF != 0
-}
 
 type profileKey struct {
 	pid int32
@@ -950,42 +945,22 @@ func (p *CPU) obtainRawData(ctx context.Context) (profile.RawData, map[uint32]st
 
 		var userErr error
 
-		if key.walkedWithDwarf() {
-			// Stacks retrieved with our dwarf unwind information unwinder.
-			userErr = p.bpfMaps.readUserStackWithDwarf(key.UserStackIDDWARF, &stack)
-			if userErr != nil {
-				p.metrics.stackDrop.WithLabelValues(labelStackDropReasonUserDWARF).Inc()
-				if errors.Is(userErr, errUnrecoverable) {
-					p.metrics.readMapAttempts.WithLabelValues(labelUser, labelDwarfUnwind, labelError).Inc()
-					return nil, interpreterSymbolTable, userErr
-				}
-				if errors.Is(userErr, errUnwindFailed) {
-					p.metrics.readMapAttempts.WithLabelValues(labelUser, labelDwarfUnwind, labelFailed).Inc()
-				}
-				if errors.Is(userErr, errMissing) {
-					p.metrics.readMapAttempts.WithLabelValues(labelUser, labelDwarfUnwind, labelMissing).Inc()
-				}
-			} else {
-				p.metrics.readMapAttempts.WithLabelValues(labelUser, labelDwarfUnwind, labelSuccess).Inc()
+		// User stacks retrieved with our fp / dwarf unwinder.
+		userErr = p.bpfMaps.readUserStack(key.UserStackID, stack[0:stackDepth])
+		if userErr != nil {
+			p.metrics.stackDrop.WithLabelValues(labelStackDropReasonUserDWARF).Inc()
+			if errors.Is(userErr, errUnrecoverable) {
+				p.metrics.readMapAttempts.WithLabelValues(labelUser, labelDwarfUnwind, labelError).Inc()
+				return nil, interpreterSymbolTable, userErr
+			}
+			if errors.Is(userErr, errUnwindFailed) {
+				p.metrics.readMapAttempts.WithLabelValues(labelUser, labelDwarfUnwind, labelFailed).Inc()
+			}
+			if errors.Is(userErr, errMissing) {
+				p.metrics.readMapAttempts.WithLabelValues(labelUser, labelDwarfUnwind, labelMissing).Inc()
 			}
 		} else {
-			// Stacks retrieved with the kernel's included frame pointer based unwinder.
-			userErr = p.bpfMaps.readUserStack(key.UserStackID, &stack)
-			if userErr != nil {
-				p.metrics.stackDrop.WithLabelValues(labelStackDropReasonUserFramePointer).Inc()
-				if errors.Is(userErr, errUnrecoverable) {
-					p.metrics.readMapAttempts.WithLabelValues(labelUser, labelKernelUnwind, labelError).Inc()
-					return nil, interpreterSymbolTable, userErr
-				}
-				if errors.Is(userErr, errUnwindFailed) {
-					p.metrics.readMapAttempts.WithLabelValues(labelUser, labelKernelUnwind, labelFailed).Inc()
-				}
-				if errors.Is(userErr, errMissing) {
-					p.metrics.readMapAttempts.WithLabelValues(labelUser, labelKernelUnwind, labelMissing).Inc()
-				}
-			} else {
-				p.metrics.readMapAttempts.WithLabelValues(labelUser, labelKernelUnwind, labelSuccess).Inc()
-			}
+			p.metrics.readMapAttempts.WithLabelValues(labelUser, labelDwarfUnwind, labelSuccess).Inc()
 		}
 
 		if key.InterpreterStackID != 0 {
@@ -996,7 +971,8 @@ func (p *CPU) obtainRawData(ctx context.Context) (profile.RawData, map[uint32]st
 			}
 		}
 
-		kernelErr := p.bpfMaps.readKernelStack(key.KernelStackID, &stack)
+		// stack[stackDepth:stackDepth*2]
+		kernelErr := p.bpfMaps.readUserStack(key.KernelStackID, stack[stackDepth:stackDepth*2])
 		if kernelErr != nil {
 			p.metrics.stackDrop.WithLabelValues(labelStackDropReasonKernel).Inc()
 			if errors.Is(kernelErr, errUnrecoverable) {
